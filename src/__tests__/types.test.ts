@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, JournalWiseSettings } from '../types';
+import { DEFAULT_SETTINGS } from '../types';
 
 describe('JournalWiseSettings', () => {
     it('should have correct default settings', () => {

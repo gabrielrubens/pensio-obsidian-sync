@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting, FuzzySuggestModal, TFolder } from 'obsidian';
+import { App, FuzzySuggestModal, Notice, PluginSettingTab, Setting, TFolder } from 'obsidian';
 import JournalWisePlugin from './main';
 
 /**
@@ -15,7 +15,7 @@ class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
     getItems(): TFolder[] {
         const folders: TFolder[] = [];
         const rootFolder = this.app.vault.getRoot();
-        
+
         const addFolders = (folder: TFolder) => {
             folders.push(folder);
             for (const child of folder.children) {
@@ -24,7 +24,7 @@ class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
                 }
             }
         };
-        
+
         addFolders(rootFolder);
         return folders;
     }
