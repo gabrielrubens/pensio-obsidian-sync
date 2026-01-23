@@ -392,7 +392,7 @@ export class SyncEngine {
         }
 
         console.log('Full sync completed');
-        
+
         // Throw error if any failures occurred
         if (errors.length > 0) {
             throw new Error(`Sync completed with ${errors.length} error(s): ${errors[0]}`);
