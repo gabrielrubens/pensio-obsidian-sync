@@ -1,0 +1,10 @@
+{
+    "id": "journal-wise-sync",
+    "name": "Journal Wise Sync",
+    "version": "0.1.0",
+    "minAppVersion": "1.4.0",
+    "description": "Sync your Obsidian vault with Journal Wise for emotional insights and AI-powered reflections",
+    "author": "Journal Wise",
+    "authorUrl": "https://github.com/gabrielrubens/journal-wise",
+    "isDesktopOnly": false
+}
