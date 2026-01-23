@@ -63,7 +63,7 @@ function parseFrontmatter(yaml: string): Record<string, any> {
                 value = value
                     .substring(1, value.length - 1)
                     .split(',')
-                    .map(v => v.trim().replace(/^"(.*)"$/, '$1'));
+                    .map((v: string) => v.trim().replace(/^"(.*)"$/, '$1'));
             }
 
             // Parse booleans

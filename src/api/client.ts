@@ -48,7 +48,7 @@ export class ApiClient {
         };
 
         // Add auth header if we have a token
-        if (this.accessToken) {
+        if (this.accessToken && options.headers) {
             options.headers['Authorization'] = `Bearer ${this.accessToken}`;
         }
 
