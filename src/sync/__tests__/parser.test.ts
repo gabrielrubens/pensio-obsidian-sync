@@ -1,89 +1,45 @@
+/**
+ * Tests for simplified markdown parser
+ * 
+ * Philosophy: Plugin is lightweight, just sends raw markdown to backend.
+ * Backend handles all parsing, validation, and processing.
+ */
+
 import { parseMarkdown } from '../parser';
 
 describe('parseMarkdown', () => {
-    it('should parse frontmatter', () => {
-        const content = `---
-date: 2026-01-23
-mood: happy
-tags: [test, journal]
----
-
-# Test Entry
-
-This is a test.`;
-
+    it('should extract title from H1', () => {
+        const content = '# My Title\n\nContent here';
         const result = parseMarkdown(content);
-
-        expect(result.frontmatter.date).toBe('2026-01-23');
-        expect(result.frontmatter.mood).toBe('happy');
-        expect(result.frontmatter.tags).toEqual(['test', 'journal']);
-    });
-
-    it('should extract title from first heading', () => {
-        const content = `# My Title
-
-Content here.`;
-
-        const result = parseMarkdown(content);
-
+        
         expect(result.title).toBe('My Title');
+        expect(result.content).toBe(content);
     });
 
-    it('should strip markdown formatting', () => {
-        const content = `**Bold** and *italic* text with [link](url) and [[wikilink]].`;
-
+    it('should return empty title if no H1', () => {
+        const content = 'Just some content without heading';
         const result = parseMarkdown(content);
-
-        expect(result.text).toContain('Bold');
-        expect(result.text).toContain('italic');
-        expect(result.text).not.toContain('**');
-        expect(result.text).not.toContain('*');
-        expect(result.text).not.toContain('[');
-    });
-
-    it('should handle content without frontmatter', () => {
-        const content = `# Just Content
-
-No frontmatter here.`;
-
-        const result = parseMarkdown(content);
-
-        expect(result.frontmatter).toEqual({});
-        expect(result.title).toBe('Just Content');
-    });
-
-    it('should handle empty content', () => {
-        const result = parseMarkdown('');
-
-        expect(result.frontmatter).toEqual({});
+        
         expect(result.title).toBe('');
-        expect(result.html).toBe('');
-        expect(result.text).toBe('');
+        expect(result.content).toBe(content);
     });
 
-    it('should parse boolean values in frontmatter', () => {
-        const content = `---
-published: true
-draft: false
----
-
-Content`;
-
+    it('should preserve raw markdown with frontmatter', () => {
+        const content = '---\ntitle: Test\ndate: 2026-01-23\n---\n# Content\n\nBody text';
         const result = parseMarkdown(content);
-
-        expect(result.frontmatter.published).toBe(true);
-        expect(result.frontmatter.draft).toBe(false);
+        
+        // Raw content preserved - backend will parse frontmatter
+        expect(result.content).toBe(content);
+        expect(result.content).toContain('---');
+        expect(result.content).toContain('title: Test');
     });
 
-    it('should parse quoted strings in frontmatter', () => {
-        const content = `---
-title: "My Title with: colon"
----
-
-Content`;
-
+    it('should preserve wikilinks - backend extracts them', () => {
+        const content = 'Met with [[John Smith]] and [[Jane Doe]]';
         const result = parseMarkdown(content);
-
-        expect(result.frontmatter.title).toBe('My Title with: colon');
+        
+        // Raw content with wikilinks preserved
+        expect(result.content).toContain('[[John Smith]]');
+        expect(result.content).toContain('[[Jane Doe]]');
     });
 });

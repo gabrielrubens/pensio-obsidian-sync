@@ -70,11 +70,33 @@ export interface EntryResponse {
 }
 
 export interface PersonResponse {
-    id: number;
+    id: string;
     name: string;
-    vault_path: string;
+    aliases: string[];
+    person_note_path: string;
+    relationship: string;
+    birthday: string | null;
+    tags: string[];
+    from_locations: string[];
+    lived_in: string[];
+    metadata: Record<string, any>;
+    source: string;
     created_at: string;
     updated_at: string;
+}
+
+export interface PromptResponse {
+    id: string;
+    title: string;
+    content: string;
+    content_html: string;
+    description: string;
+    source: string;
+    file_path: string;
+    file_hash: string;
+    created_at: string;
+    updated_at: string;
+    usage_count: number;
 }
 
 export interface CreateEntryRequest {
@@ -86,6 +108,26 @@ export interface CreateEntryRequest {
     file_path: string;
     frontmatter: Record<string, any>;
     file_modified_at: string;
+}
+
+export interface CreatePromptRequest {
+    title: string;
+    content: string;
+    content_html: string;
+    description: string;
+    file_path: string;
+}
+
+export interface CreatePersonRequest {
+    name: string;
+    aliases: string[];
+    person_note_path: string;
+    relationship: string;
+    birthday: string | null;
+    tags: string[];
+    from_locations: string[];
+    lived_in: string[];
+    metadata: Record<string, any>;
 }
 
 export interface UpdateEntryRequest extends CreateEntryRequest {

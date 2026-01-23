@@ -2,8 +2,12 @@ import { requestUrl, RequestUrlParam, RequestUrlResponse } from 'obsidian';
 import {
     ApiError,
     CreateEntryRequest,
+    CreatePersonRequest,
+    CreatePromptRequest,
     EntryResponse,
     JournalWiseSettings,
+    PersonResponse,
+    PromptResponse,
     SyncStatusResponse,
     TokenResponse,
     UpdateEntryRequest
@@ -59,6 +63,12 @@ export class ApiClient {
 
         try {
             const response: RequestUrlResponse = await requestUrl(options);
+
+            // Handle empty responses (like DELETE 204 No Content)
+            if (response.status === 204 || !response.text) {
+                return {} as T;
+            }
+
             return response.json as T;
         } catch (error) {
             // Parse API error response
@@ -165,6 +175,144 @@ export class ApiClient {
     async findEntryByPath(filePath: string): Promise<EntryResponse | null> {
         const entries = await this.listEntries();
         return entries.find(e => e.file_path === filePath) || null;
+    }
+
+    // ========================================================================
+    // Prompt API Methods
+    // ========================================================================
+
+    /**
+     * List all prompts
+     */
+    async listPrompts(): Promise<PromptResponse[]> {
+        const response = await this.request<{ results: PromptResponse[] }>(
+            'GET',
+            '/api/v1/prompts/'
+        );
+        return response.results;
+    }
+
+    /**
+     * Get single prompt by ID
+     */
+    async getPrompt(id: string): Promise<PromptResponse> {
+        return await this.request<PromptResponse>(
+            'GET',
+            `/api/v1/prompts/${id}/`
+        );
+    }
+
+    /**
+     * Create new prompt
+     */
+    async createPrompt(prompt: CreatePromptRequest): Promise<PromptResponse> {
+        return await this.request<PromptResponse>(
+            'POST',
+            '/api/v1/prompts/',
+            prompt
+        );
+    }
+
+    /**
+     * Update existing prompt
+     */
+    async updatePrompt(id: string, prompt: CreatePromptRequest): Promise<PromptResponse> {
+        return await this.request<PromptResponse>(
+            'PUT',
+            `/api/v1/prompts/${id}/`,
+            prompt
+        );
+    }
+
+    /**
+     * Delete prompt
+     */
+    async deletePrompt(id: string): Promise<void> {
+        await this.request<void>(
+            'DELETE',
+            `/api/v1/prompts/${id}/`
+        );
+    }
+
+    /**
+     * Find prompt by file path
+     */
+    async findPromptByPath(filePath: string): Promise<PromptResponse | null> {
+        const prompts = await this.listPrompts();
+        return prompts.find(p => p.file_path === filePath) || null;
+    }
+
+    // ========================================================================
+    // Person API Methods
+    // ========================================================================
+
+    /**
+     * List all people
+     */
+    async listPeople(): Promise<PersonResponse[]> {
+        const response = await this.request<{ results: PersonResponse[] }>(
+            'GET',
+            '/api/v1/people/'
+        );
+        return response.results;
+    }
+
+    /**
+     * Get single person by ID
+     */
+    async getPerson(id: string): Promise<PersonResponse> {
+        return await this.request<PersonResponse>(
+            'GET',
+            `/api/v1/people/${id}/`
+        );
+    }
+
+    /**
+     * Create new person
+     */
+    async createPerson(person: CreatePersonRequest): Promise<PersonResponse> {
+        return await this.request<PersonResponse>(
+            'POST',
+            '/api/v1/people/',
+            person
+        );
+    }
+
+    /**
+     * Update existing person
+     */
+    async updatePerson(id: string, person: CreatePersonRequest): Promise<PersonResponse> {
+        return await this.request<PersonResponse>(
+            'PUT',
+            `/api/v1/people/${id}/`,
+            person
+        );
+    }
+
+    /**
+     * Delete person
+     */
+    async deletePerson(id: string): Promise<void> {
+        await this.request<void>(
+            'DELETE',
+            `/api/v1/people/${id}/`
+        );
+    }
+
+    /**
+     * Find person by name
+     */
+    async findPersonByName(name: string): Promise<PersonResponse | null> {
+        const people = await this.listPeople();
+        return people.find(p => p.name === name) || null;
+    }
+
+    /**
+     * Find person by file path
+     */
+    async findPersonByPath(filePath: string): Promise<PersonResponse | null> {
+        const people = await this.listPeople();
+        return people.find(p => p.person_note_path === filePath) || null;
     }
 
     /**

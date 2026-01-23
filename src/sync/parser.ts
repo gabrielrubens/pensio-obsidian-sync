@@ -1,110 +1,38 @@
 /**
- * Parse markdown content into structured data
+ * Lightweight markdown parser for Obsidian plugin
+ * 
+ * Philosophy: Keep plugin simple, let backend handle all processing.
+ * This parser ONLY extracts basic structure - all validation, normalization,
+ * and processing happens on the backend.
  */
 
 export interface ParsedMarkdown {
-    frontmatter: Record<string, any>;
+    /** Raw markdown content (backend will render to HTML) */
+    content: string;
+    /** Title extracted from first H1 or empty string */
     title: string;
-    html: string;
-    text: string;
 }
 
 /**
- * Parse markdown with frontmatter
+ * Parse markdown with minimal processing
+ * 
+ * The plugin's job is just to send raw markdown to the backend.
+ * Backend handles:
+ * - Frontmatter parsing (emoji stripping, key normalization, YAML multiline lists)
+ * - Wikilink extraction
+ * - Markdown rendering
+ * - Validation
  */
 export function parseMarkdown(content: string): ParsedMarkdown {
-    const result: ParsedMarkdown = {
-        frontmatter: {},
-        title: '',
-        html: '',
-        text: ''
-    };
-
-    // Parse frontmatter
-    const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
-    if (frontmatterMatch) {
-        result.frontmatter = parseFrontmatter(frontmatterMatch[1]);
-        content = content.substring(frontmatterMatch[0].length);
-    }
-
-    // Extract title (first heading or filename)
+    // Extract title from first H1 (optional, backend can handle this too)
+    let title = '';
     const titleMatch = content.match(/^#\s+(.+)$/m);
     if (titleMatch) {
-        result.title = titleMatch[1].trim();
+        title = titleMatch[1].trim();
     }
 
-    // For now, store content as-is
-    // Server will handle markdown-to-HTML conversion
-    result.html = content;
-    result.text = stripMarkdown(content);
-
-    return result;
-}
-
-/**
- * Parse YAML frontmatter
- */
-function parseFrontmatter(yaml: string): Record<string, any> {
-    const result: Record<string, any> = {};
-
-    yaml.split('\n').forEach(line => {
-        const match = line.match(/^(\w+):\s*(.*)$/);
-        if (match) {
-            const key = match[1];
-            let value: any = match[2].trim();
-
-            // Remove quotes
-            if (value.startsWith('"') && value.endsWith('"')) {
-                value = value.substring(1, value.length - 1);
-            }
-
-            // Parse arrays
-            if (value.startsWith('[') && value.endsWith(']')) {
-                value = value
-                    .substring(1, value.length - 1)
-                    .split(',')
-                    .map((v: string) => v.trim().replace(/^"(.*)"$/, '$1'));
-            }
-
-            // Parse booleans
-            if (value === 'true') value = true;
-            if (value === 'false') value = false;
-
-            result[key] = value;
-        }
-    });
-
-    return result;
-}
-
-/**
- * Strip markdown formatting to get plain text
- */
-function stripMarkdown(markdown: string): string {
-    let text = markdown;
-
-    // Remove headings
-    text = text.replace(/^#{1,6}\s+/gm, '');
-
-    // Remove bold/italic
-    text = text.replace(/(\*\*|__)(.*?)\1/g, '$2');
-    text = text.replace(/(\*|_)(.*?)\1/g, '$2');
-
-    // Remove links but keep text
-    text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
-
-    // Remove wikilinks but keep text
-    text = text.replace(/\[\[([^\]]+)\]\]/g, '$1');
-
-    // Remove images
-    text = text.replace(/!\[([^\]]*)\]\([^\)]+\)/g, '');
-
-    // Remove code blocks
-    text = text.replace(/```[\s\S]*?```/g, '');
-    text = text.replace(/`([^`]+)`/g, '$1');
-
-    // Remove HTML tags
-    text = text.replace(/<[^>]+>/g, '');
-
-    return text.trim();
+    return {
+        content: content,  // Send raw markdown, backend processes it
+        title: title
+    };
 }
