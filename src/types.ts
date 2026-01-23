@@ -5,10 +5,11 @@ export interface JournalWiseSettings {
     apiUrl: string;
     apiToken: string;
     deviceId: string;
-    deviceName: string;
     autoSync: boolean;
     syncInterval: number; // minutes
-    syncFolders: string[]; // folders to sync (e.g., ["Journal", "People"])
+    journalFolder: string; // folder for journal entries
+    promptFolder: string; // folder for prompts
+    peopleFolder: string; // folder for people notes
     excludePatterns: string[]; // glob patterns to exclude
     maxEntrySizeMB: number;
     conflictResolution: 'server-wins' | 'local-wins' | 'ask';
@@ -21,10 +22,11 @@ export const DEFAULT_SETTINGS: JournalWiseSettings = {
     apiUrl: '',
     apiToken: '',
     deviceId: '',
-    deviceName: '',
     autoSync: false,
     syncInterval: 5,
-    syncFolders: ['Journal'],
+    journalFolder: 'Journal',
+    promptFolder: 'Prompts',
+    peopleFolder: 'People',
     excludePatterns: ['.obsidian/**', '.trash/**'],
     maxEntrySizeMB: 5,
     conflictResolution: 'server-wins'

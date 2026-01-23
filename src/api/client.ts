@@ -86,7 +86,7 @@ export class ApiClient {
                 email,
                 password,
                 device_id: this.settings.deviceId,
-                device_name: this.settings.deviceName || 'Obsidian',
+                device_name: 'Obsidian', // Default device name
             }
         );
 

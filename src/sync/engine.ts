@@ -93,9 +93,15 @@ export class SyncEngine {
         // Must be markdown
         if (!file.path.endsWith('.md')) return false;
 
-        // Check if in sync folders
-        const inSyncFolder = this.settings.syncFolders.some(folder =>
-            file.path.startsWith(folder)
+        // Check if in any of the sync folders
+        const syncFolders = [
+            this.settings.journalFolder,
+            this.settings.promptFolder,
+            this.settings.peopleFolder
+        ].filter(folder => folder.trim().length > 0);
+
+        const inSyncFolder = syncFolders.some(folder =>
+            file.path.startsWith(folder + '/') || file.path === folder
         );
         if (!inSyncFolder) return false;
 

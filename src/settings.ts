@@ -1,5 +1,42 @@
-import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
+import { App, Notice, PluginSettingTab, Setting, FuzzySuggestModal, TFolder } from 'obsidian';
 import JournalWisePlugin from './main';
+
+/**
+ * Folder suggest modal for selecting folders
+ */
+class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
+    private onChooseFolderCallback: (folder: TFolder) => void;
+
+    constructor(app: App, onChooseFolder: (folder: TFolder) => void) {
+        super(app);
+        this.onChooseFolderCallback = onChooseFolder;
+    }
+
+    getItems(): TFolder[] {
+        const folders: TFolder[] = [];
+        const rootFolder = this.app.vault.getRoot();
+        
+        const addFolders = (folder: TFolder) => {
+            folders.push(folder);
+            for (const child of folder.children) {
+                if (child instanceof TFolder) {
+                    addFolders(child);
+                }
+            }
+        };
+        
+        addFolders(rootFolder);
+        return folders;
+    }
+
+    getItemText(folder: TFolder): string {
+        return folder.path || '/';
+    }
+
+    onChooseItem(folder: TFolder, evt: MouseEvent | KeyboardEvent): void {
+        this.onChooseFolderCallback(folder);
+    }
+}
 
 export class JournalWiseSettingTab extends PluginSettingTab {
     plugin: JournalWisePlugin;
@@ -43,17 +80,6 @@ export class JournalWiseSettingTab extends PluginSettingTab {
                     });
                 text.inputEl.type = 'password';
             });
-
-        new Setting(containerEl)
-            .setName('Device name')
-            .setDesc('Name for this device (helps identify tokens)')
-            .addText(text => text
-                .setPlaceholder('My Laptop')
-                .setValue(this.plugin.settings.deviceName)
-                .onChange(async (value) => {
-                    this.plugin.settings.deviceName = value;
-                    await this.plugin.saveSettings();
-                }));
 
         // Test connection button
         new Setting(containerEl)
@@ -106,18 +132,73 @@ export class JournalWiseSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        // Folder pickers
+        containerEl.createEl('h3', { text: 'Sync Folders' });
+
         new Setting(containerEl)
-            .setName('Sync folders')
-            .setDesc('Comma-separated folders to sync (e.g., "Journal, People")')
-            .addText(text => text
-                .setPlaceholder('Journal, People')
-                .setValue(this.plugin.settings.syncFolders.join(', '))
-                .onChange(async (value) => {
-                    this.plugin.settings.syncFolders = value
-                        .split(',')
-                        .map(f => f.trim())
-                        .filter(f => f.length > 0);
-                    await this.plugin.saveSettings();
+            .setName('Journal folder')
+            .setDesc('Folder containing journal entries')
+            .addText(text => {
+                text
+                    .setPlaceholder('Journal')
+                    .setValue(this.plugin.settings.journalFolder)
+                    .onChange(async (value) => {
+                        this.plugin.settings.journalFolder = value.trim();
+                        await this.plugin.saveSettings();
+                    });
+            })
+            .addButton(button => button
+                .setButtonText('Browse')
+                .onClick(() => {
+                    new FolderSuggestModal(this.app, async (folder) => {
+                        this.plugin.settings.journalFolder = folder.path;
+                        await this.plugin.saveSettings();
+                        this.display(); // Refresh settings display
+                    }).open();
+                }));
+
+        new Setting(containerEl)
+            .setName('Prompts folder')
+            .setDesc('Folder containing writing prompts')
+            .addText(text => {
+                text
+                    .setPlaceholder('Prompts')
+                    .setValue(this.plugin.settings.promptFolder)
+                    .onChange(async (value) => {
+                        this.plugin.settings.promptFolder = value.trim();
+                        await this.plugin.saveSettings();
+                    });
+            })
+            .addButton(button => button
+                .setButtonText('Browse')
+                .onClick(() => {
+                    new FolderSuggestModal(this.app, async (folder) => {
+                        this.plugin.settings.promptFolder = folder.path;
+                        await this.plugin.saveSettings();
+                        this.display(); // Refresh settings display
+                    }).open();
+                }));
+
+        new Setting(containerEl)
+            .setName('People folder')
+            .setDesc('Folder containing people notes')
+            .addText(text => {
+                text
+                    .setPlaceholder('People')
+                    .setValue(this.plugin.settings.peopleFolder)
+                    .onChange(async (value) => {
+                        this.plugin.settings.peopleFolder = value.trim();
+                        await this.plugin.saveSettings();
+                    });
+            })
+            .addButton(button => button
+                .setButtonText('Browse')
+                .onClick(() => {
+                    new FolderSuggestModal(this.app, async (folder) => {
+                        this.plugin.settings.peopleFolder = folder.path;
+                        await this.plugin.saveSettings();
+                        this.display(); // Refresh settings display
+                    }).open();
                 }));
 
         new Setting(containerEl)
