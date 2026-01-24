@@ -12,6 +12,7 @@ import {
     TokenResponse,
     UpdateEntryRequest
 } from '../types';
+import { CacheManager } from './cache';
 
 /**
  * API client for Journal Wise REST API
@@ -19,10 +20,12 @@ import {
 export class ApiClient {
     private settings: JournalWiseSettings;
     private accessToken: string;
+    private cache: CacheManager;
 
     constructor(settings: JournalWiseSettings) {
         this.settings = settings;
         this.accessToken = settings.apiToken;
+        this.cache = new CacheManager();
     }
 
     /**
@@ -71,13 +74,56 @@ export class ApiClient {
 
             return response.json as T;
         } catch (error) {
-            // Parse API error response
+            // Parse API error response and preserve status code
             if (error.status && error.json) {
                 const apiError = error.json as ApiError;
-                throw new Error(apiError.error?.message || 'API request failed');
+                const errorMessage = apiError.error?.message || apiError.detail || 'API request failed';
+                const customError: any = new Error(errorMessage);
+                customError.status = error.status;
+                throw customError;
             }
             throw error;
         }
+    }
+
+    /**
+     * Fetch all pages from a paginated endpoint
+     * DRF returns: { count: number, next: string|null, previous: string|null, results: T[] }
+     */
+    private async fetchAllPages<T>(endpoint: string): Promise<T[]> {
+        const allResults: T[] = [];
+        let nextUrl: string | null = endpoint;
+
+        while (nextUrl) {
+            const response: {
+                count: number;
+                next: string | null;
+                previous: string | null;
+                results: T[];
+            } = await this.request<{
+                count: number;
+                next: string | null;
+                previous: string | null;
+                results: T[];
+            }>('GET', nextUrl);
+
+            allResults.push(...response.results);
+
+            // Extract just the path from next URL if it's absolute
+            if (response.next) {
+                try {
+                    const parsedUrl: URL = new URL(response.next);
+                    nextUrl = parsedUrl.pathname + parsedUrl.search;
+                } catch {
+                    // If next is already relative, use it as-is
+                    nextUrl = response.next;
+                }
+            } else {
+                nextUrl = null;
+            }
+        }
+
+        return allResults;
     }
 
     /**
@@ -117,46 +163,62 @@ export class ApiClient {
     }
 
     /**
-     * List all entries
+     * List all entries (handles pagination automatically)
      */
     async listEntries(): Promise<EntryResponse[]> {
-        const response = await this.request<{ results: EntryResponse[] }>(
-            'GET',
-            '/api/v1/entries/'
-        );
-        return response.results;
+        const cached = this.cache.getAllEntries();
+        if (cached) {
+            return cached;
+        }
+
+        const entries = await this.fetchAllPages<EntryResponse>('/api/v1/entries/');
+        this.cache.setAllEntries(entries);
+        return entries;
     }
 
     /**
      * Get single entry by ID
      */
     async getEntry(id: string): Promise<EntryResponse> {
-        return await this.request<EntryResponse>(
+        const cached = this.cache.getEntry(id);
+        if (cached) {
+            return cached;
+        }
+
+        const entry = await this.request<EntryResponse>(
             'GET',
             `/api/v1/entries/${id}/`
         );
+        this.cache.setEntry(entry);
+        return entry;
     }
 
     /**
      * Create new entry
      */
     async createEntry(entry: CreateEntryRequest): Promise<EntryResponse> {
-        return await this.request<EntryResponse>(
+        const created = await this.request<EntryResponse>(
             'POST',
             '/api/v1/entries/',
             entry
         );
+        this.cache.invalidateEntry(); // Invalidate list cache
+        this.cache.setEntry(created); // Cache the new entry
+        return created;
     }
 
     /**
      * Update existing entry
      */
     async updateEntry(id: string, entry: UpdateEntryRequest): Promise<EntryResponse> {
-        return await this.request<EntryResponse>(
+        const updated = await this.request<EntryResponse>(
             'PUT',
             `/api/v1/entries/${id}/`,
             entry
         );
+        this.cache.invalidateEntry(id);
+        this.cache.setEntry(updated);
+        return updated;
     }
 
     /**
@@ -167,14 +229,27 @@ export class ApiClient {
             'DELETE',
             `/api/v1/entries/${id}/`
         );
+        this.cache.invalidateEntry(id);
     }
 
     /**
-     * Find entry by file path
+     * Find entry by file path (efficient - uses query parameter)
      */
     async findEntryByPath(filePath: string): Promise<EntryResponse | null> {
-        const entries = await this.listEntries();
-        return entries.find(e => e.file_path === filePath) || null;
+        const cached = this.cache.findEntryByPath(filePath);
+        if (cached) {
+            return cached;
+        }
+
+        const response = await this.request<{ results: EntryResponse[] }>(
+            'GET',
+            `/api/v1/entries/?file_path=${encodeURIComponent(filePath)}`
+        );
+        const entry = response.results.length > 0 ? response.results[0] : null;
+        if (entry) {
+            this.cache.setEntry(entry);
+        }
+        return entry;
     }
 
     // ========================================================================
@@ -182,46 +257,62 @@ export class ApiClient {
     // ========================================================================
 
     /**
-     * List all prompts
+     * List all prompts (handles pagination automatically)
      */
     async listPrompts(): Promise<PromptResponse[]> {
-        const response = await this.request<{ results: PromptResponse[] }>(
-            'GET',
-            '/api/v1/prompts/'
-        );
-        return response.results;
+        const cached = this.cache.getAllPrompts();
+        if (cached) {
+            return cached;
+        }
+
+        const prompts = await this.fetchAllPages<PromptResponse>('/api/v1/prompts/');
+        this.cache.setAllPrompts(prompts);
+        return prompts;
     }
 
     /**
      * Get single prompt by ID
      */
     async getPrompt(id: string): Promise<PromptResponse> {
-        return await this.request<PromptResponse>(
+        const cached = this.cache.getPrompt(id);
+        if (cached) {
+            return cached;
+        }
+
+        const prompt = await this.request<PromptResponse>(
             'GET',
             `/api/v1/prompts/${id}/`
         );
+        this.cache.setPrompt(prompt);
+        return prompt;
     }
 
     /**
      * Create new prompt
      */
     async createPrompt(prompt: CreatePromptRequest): Promise<PromptResponse> {
-        return await this.request<PromptResponse>(
+        const created = await this.request<PromptResponse>(
             'POST',
             '/api/v1/prompts/',
             prompt
         );
+        this.cache.invalidatePrompt();
+        this.cache.setPrompt(created);
+        return created;
     }
 
     /**
      * Update existing prompt
      */
     async updatePrompt(id: string, prompt: CreatePromptRequest): Promise<PromptResponse> {
-        return await this.request<PromptResponse>(
+        const updated = await this.request<PromptResponse>(
             'PUT',
             `/api/v1/prompts/${id}/`,
             prompt
         );
+        this.cache.invalidatePrompt(id);
+        this.cache.setPrompt(updated);
+        return updated;
     }
 
     /**
@@ -232,14 +323,27 @@ export class ApiClient {
             'DELETE',
             `/api/v1/prompts/${id}/`
         );
+        this.cache.invalidatePrompt(id);
     }
 
     /**
-     * Find prompt by file path
+     * Find prompt by file path (efficient - uses query parameter)
      */
     async findPromptByPath(filePath: string): Promise<PromptResponse | null> {
-        const prompts = await this.listPrompts();
-        return prompts.find(p => p.file_path === filePath) || null;
+        const cached = this.cache.findPromptByPath(filePath);
+        if (cached) {
+            return cached;
+        }
+
+        const response = await this.request<{ results: PromptResponse[] }>(
+            'GET',
+            `/api/v1/prompts/?file_path=${encodeURIComponent(filePath)}`
+        );
+        const prompt = response.results.length > 0 ? response.results[0] : null;
+        if (prompt) {
+            this.cache.setPrompt(prompt);
+        }
+        return prompt;
     }
 
     // ========================================================================
@@ -247,46 +351,62 @@ export class ApiClient {
     // ========================================================================
 
     /**
-     * List all people
+     * List all people (handles pagination automatically)
      */
     async listPeople(): Promise<PersonResponse[]> {
-        const response = await this.request<{ results: PersonResponse[] }>(
-            'GET',
-            '/api/v1/people/'
-        );
-        return response.results;
+        const cached = this.cache.getAllPeople();
+        if (cached) {
+            return cached;
+        }
+
+        const people = await this.fetchAllPages<PersonResponse>('/api/v1/people/');
+        this.cache.setAllPeople(people);
+        return people;
     }
 
     /**
      * Get single person by ID
      */
     async getPerson(id: string): Promise<PersonResponse> {
-        return await this.request<PersonResponse>(
+        const cached = this.cache.getPerson(id);
+        if (cached) {
+            return cached;
+        }
+
+        const person = await this.request<PersonResponse>(
             'GET',
             `/api/v1/people/${id}/`
         );
+        this.cache.setPerson(person);
+        return person;
     }
 
     /**
      * Create new person
      */
     async createPerson(person: CreatePersonRequest): Promise<PersonResponse> {
-        return await this.request<PersonResponse>(
+        const created = await this.request<PersonResponse>(
             'POST',
             '/api/v1/people/',
             person
         );
+        this.cache.invalidatePerson();
+        this.cache.setPerson(created);
+        return created;
     }
 
     /**
      * Update existing person
      */
     async updatePerson(id: string, person: CreatePersonRequest): Promise<PersonResponse> {
-        return await this.request<PersonResponse>(
+        const updated = await this.request<PersonResponse>(
             'PUT',
             `/api/v1/people/${id}/`,
             person
         );
+        this.cache.invalidatePerson(id);
+        this.cache.setPerson(updated);
+        return updated;
     }
 
     /**
@@ -297,22 +417,47 @@ export class ApiClient {
             'DELETE',
             `/api/v1/people/${id}/`
         );
+        this.cache.invalidatePerson(id);
     }
 
     /**
-     * Find person by name
+     * Find person by name (efficient - uses query parameter)
      */
     async findPersonByName(name: string): Promise<PersonResponse | null> {
-        const people = await this.listPeople();
-        return people.find(p => p.name === name) || null;
+        const cached = this.cache.findPersonByName(name);
+        if (cached) {
+            return cached;
+        }
+
+        const response = await this.request<{ results: PersonResponse[] }>(
+            'GET',
+            `/api/v1/people/?name=${encodeURIComponent(name)}`
+        );
+        const person = response.results.length > 0 ? response.results[0] : null;
+        if (person) {
+            this.cache.setPerson(person);
+        }
+        return person;
     }
 
     /**
-     * Find person by file path
+     * Find person by file path (efficient - uses query parameter)
      */
     async findPersonByPath(filePath: string): Promise<PersonResponse | null> {
-        const people = await this.listPeople();
-        return people.find(p => p.person_note_path === filePath) || null;
+        const cached = this.cache.findPersonByPath(filePath);
+        if (cached) {
+            return cached;
+        }
+
+        const response = await this.request<{ results: PersonResponse[] }>(
+            'GET',
+            `/api/v1/people/?person_note_path=${encodeURIComponent(filePath)}`
+        );
+        const person = response.results.length > 0 ? response.results[0] : null;
+        if (person) {
+            this.cache.setPerson(person);
+        }
+        return person;
     }
 
     /**

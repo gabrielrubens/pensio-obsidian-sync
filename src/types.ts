@@ -148,10 +148,11 @@ export interface SyncQueueItem {
  * Error types
  */
 export interface ApiError {
-    error: {
+    error?: {
         message: string;
         type: string;
         status_code: number;
         fields?: Record<string, string[]>;
     };
+    detail?: string;  // Django REST framework error detail
 }

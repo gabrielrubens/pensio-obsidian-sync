@@ -11,9 +11,16 @@ export class SyncEngine {
     private settings: JournalWiseSettings;
     private apiClient: ApiClient;
     private syncQueue: SyncQueueItem[] = [];
-    private isWatching = false; private onFileCreatedBound?: (file: TAbstractFile) => Promise<void>;
-    private onFileModifiedBound?: (file: TAbstractFile) => Promise<void>;
-    private onFileDeletedBound?: (file: TAbstractFile) => Promise<void>; private isSyncing = false;
+    private isWatching = false;
+    private isSyncing = false;
+    private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
+    private recentDeletes: Map<string, { name: string, timestamp: number }> = new Map();
+    private readonly DEBOUNCE_MS = 1000; // Wait 1 second before syncing
+    private readonly RENAME_DETECTION_MS = 5000; // Track deletes for 5 seconds
+
+    // Incremental sync tracking
+    private lastSyncTime: number | null = null;
+    private syncedFiles: Map<string, { mtime: number, hash: string }> = new Map();
 
     // Bind handlers once to preserve reference for cleanup
     private readonly boundOnFileCreated: (file: TAbstractFile) => Promise<void>;
@@ -69,8 +76,16 @@ export class SyncEngine {
         if (!this.shouldSyncFile(file)) return;
 
         console.log('File created:', file.path);
-        this.addToQueue(file.path, 'create');
-        await this.processQueue();
+
+        // Check if this is a rename (file with similar name was recently deleted)
+        const wasRenamed = this.checkForRename(file);
+        if (wasRenamed) {
+            console.log('Detected rename, will update existing record');
+            // Treat as update, not create
+            this.debounceSync(file.path, 'update');
+        } else {
+            this.debounceSync(file.path, 'create');
+        }
     }
 
     /**
@@ -81,8 +96,7 @@ export class SyncEngine {
         if (!this.shouldSyncFile(file)) return;
 
         console.log('File modified:', file.path);
-        this.addToQueue(file.path, 'update');
-        await this.processQueue();
+        this.debounceSync(file.path, 'update');
     }
 
     /**
@@ -93,8 +107,112 @@ export class SyncEngine {
         if (!this.shouldSyncFile(file)) return;
 
         console.log('File deleted:', file.path);
-        this.addToQueue(file.path, 'delete');
-        await this.processQueue();
+
+        // Remove from incremental sync tracking
+        this.removeFileTracking(file.path);
+
+        // Track this deletion for rename detection
+        const fileName = this.extractBaseName(file.path);
+        this.recentDeletes.set(file.path, {
+            name: fileName,
+            timestamp: Date.now()
+        });
+
+        // Clean up old tracked deletes after RENAME_DETECTION_MS
+        setTimeout(() => {
+            this.recentDeletes.delete(file.path);
+        }, this.RENAME_DETECTION_MS);
+
+        this.debounceSync(file.path, 'delete');
+    }
+
+    /**
+     * Check if a newly created file is actually a rename
+     */
+    private checkForRename(newFile: TFile): boolean {
+        const newFileName = this.extractBaseName(newFile.path);
+        const now = Date.now();
+
+        // Check if any recently deleted file has a similar name
+        for (const [deletedPath, info] of this.recentDeletes.entries()) {
+            // Check if deletion was recent
+            if (now - info.timestamp > this.RENAME_DETECTION_MS) {
+                this.recentDeletes.delete(deletedPath);
+                continue;
+            }
+
+            // Same folder and similar name suggests rename
+            const newFolder = this.getParentFolder(newFile.path);
+            const deletedFolder = this.getParentFolder(deletedPath);
+
+            if (newFolder === deletedFolder) {
+                // Check if names are similar (might be numbered versions)
+                // Or if they're in the same category (both are people files)
+                const similarName = this.areSimilarNames(info.name, newFileName);
+                if (similarName) {
+                    // Remove from recent deletes
+                    this.recentDeletes.delete(deletedPath);
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Extract base name without extension and numbering
+     */
+    private extractBaseName(filePath: string): string {
+        const fileName = filePath.split('/').pop() || '';
+        // Remove .md extension
+        const withoutExt = fileName.replace(/\.md$/, '');
+        // Remove trailing numbers like _2, _3, etc.
+        return withoutExt.replace(/_\d+$/, '');
+    }
+
+    /**
+     * Get parent folder of a file path
+     */
+    private getParentFolder(filePath: string): string {
+        const parts = filePath.split('/');
+        parts.pop(); // Remove filename
+        return parts.join('/');
+    }
+
+    /**
+     * Check if two names are similar (for rename detection)
+     */
+    private areSimilarNames(name1: string, name2: string): boolean {
+        // Exact match after removing numbers
+        if (name1 === name2) return true;
+
+        // Levenshtein distance for fuzzy matching
+        // For now, just check if one contains the other
+        const lower1 = name1.toLowerCase();
+        const lower2 = name2.toLowerCase();
+
+        return lower1.includes(lower2) || lower2.includes(lower1);
+    }
+
+    /**
+     * Debounce sync to prevent duplicate events
+     */
+    private debounceSync(filePath: string, action: 'create' | 'update' | 'delete'): void {
+        // Clear existing timer for this file
+        const existingTimer = this.debounceTimers.get(filePath);
+        if (existingTimer) {
+            clearTimeout(existingTimer);
+        }
+
+        // Set new timer
+        const timer = setTimeout(() => {
+            this.addToQueue(filePath, action);
+            this.processQueue();
+            this.debounceTimers.delete(filePath);
+        }, this.DEBOUNCE_MS);
+
+        this.debounceTimers.set(filePath, timer);
     }
 
     /**
@@ -123,6 +241,54 @@ export class SyncEngine {
         });
 
         return !excluded;
+    }
+
+    /**
+     * Check if file needs syncing based on modification time
+     * Returns true if file is new or modified since last sync
+     */
+    private async needsSync(file: TFile): Promise<boolean> {
+        // If no last sync time, sync everything
+        if (!this.lastSyncTime) {
+            return true;
+        }
+
+        // Check if file was modified since last sync
+        if (file.stat.mtime > this.lastSyncTime) {
+            return true;
+        }
+
+        // Check tracked file info
+        const tracked = this.syncedFiles.get(file.path);
+        if (!tracked) {
+            // File not tracked yet, needs sync
+            return true;
+        }
+
+        // Check if mtime changed
+        if (file.stat.mtime !== tracked.mtime) {
+            return true;
+        }
+
+        // Optionally check content hash (for now, mtime is sufficient)
+        return false;
+    }
+
+    /**
+     * Update file tracking after successful sync
+     */
+    private updateFileTracking(file: TFile, hash?: string): void {
+        this.syncedFiles.set(file.path, {
+            mtime: file.stat.mtime,
+            hash: hash || ''
+        });
+    }
+
+    /**
+     * Remove file from tracking
+     */
+    private removeFileTracking(filePath: string): void {
+        this.syncedFiles.delete(filePath);
     }
 
     /**
@@ -159,7 +325,16 @@ export class SyncEngine {
                 } catch (error) {
                     console.error(`Failed to sync ${item.filePath}:`, error);
 
-                    // Retry logic
+                    // Parse error status
+                    const errorStatus = error?.status || 0;
+
+                    // Don't retry auth errors (401) or conflicts (409)
+                    if (errorStatus === 401 || errorStatus === 409) {
+                        console.log(`Skipping retry for ${item.filePath} (status ${errorStatus})`);
+                        continue;
+                    }
+
+                    // Retry logic for network errors
                     if (item.retryCount < 3) {
                         item.retryCount++;
                         this.syncQueue.push(item);
@@ -193,6 +368,13 @@ export class SyncEngine {
     async syncFile(file: TFile): Promise<void> {
         console.log('Syncing file:', file.path);
 
+        // Check if file needs syncing (incremental sync optimization)
+        const needsSync = await this.needsSync(file);
+        if (!needsSync) {
+            console.log('File unchanged, skipping sync:', file.path);
+            return;
+        }
+
         // Determine content type based on folder
         const contentType = this.detectContentType(file.path);
         console.log(`Content type detected: ${contentType}`);
@@ -217,6 +399,9 @@ export class SyncEngine {
         } else {
             await this.syncEntry(file, parsed);
         }
+
+        // Update file tracking after successful sync
+        this.updateFileTracking(file);
     }
 
     /**
@@ -304,8 +489,9 @@ export class SyncEngine {
      */
     private async syncPerson(file: TFile, parsed: any): Promise<void> {
         // Plugin sends RAW markdown, backend parses frontmatter and extracts fields
+        const personName = parsed.title || file.basename;
         const personData: CreatePersonRequest = {
-            name: parsed.title || file.basename,
+            name: personName,
             aliases: [],  // Backend extracts from frontmatter
             person_note_path: file.path,
             relationship: '',  // Backend extracts from frontmatter
@@ -318,8 +504,11 @@ export class SyncEngine {
             }
         };
 
-        // Check if person exists
-        const existingPerson = await this.apiClient.findPersonByPath(file.path);
+        // Check if person exists by path OR by name
+        let existingPerson = await this.apiClient.findPersonByPath(file.path);
+        if (!existingPerson) {
+            existingPerson = await this.apiClient.findPersonByName(personName);
+        }
 
         if (existingPerson) {
             // Update existing person
@@ -327,8 +516,23 @@ export class SyncEngine {
             console.log('Updated person:', file.path);
         } else {
             // Create new person
-            await this.apiClient.createPerson(personData);
-            console.log('Created person:', file.path);
+            try {
+                await this.apiClient.createPerson(personData);
+                console.log('Created person:', file.path);
+            } catch (error) {
+                // If we get a conflict error, person was created concurrently
+                if (error?.status === 409 || error?.message?.includes('duplicate key')) {
+                    console.log('Person already exists (created concurrently):', personName);
+                    // Fetch the existing person and update it
+                    existingPerson = await this.apiClient.findPersonByName(personName);
+                    if (existingPerson) {
+                        await this.apiClient.updatePerson(existingPerson.id, personData);
+                        console.log('Updated person after conflict:', file.path);
+                    }
+                } else {
+                    throw error;
+                }
+            }
         }
     }
 
@@ -365,6 +569,7 @@ export class SyncEngine {
     async syncAll(): Promise<void> {
         console.log('Starting full sync');
 
+        const syncStartTime = Date.now();
         const files = this.app.vault.getMarkdownFiles();
         const filesToSync = files.filter(file => this.shouldSyncFile(file));
 
@@ -392,6 +597,12 @@ export class SyncEngine {
         }
 
         console.log('Full sync completed');
+
+        // Update last sync time after successful sync
+        if (errors.length === 0) {
+            this.lastSyncTime = syncStartTime;
+            console.log('Incremental sync enabled - tracking', this.syncedFiles.size, 'files');
+        }
 
         // Throw error if any failures occurred
         if (errors.length > 0) {
