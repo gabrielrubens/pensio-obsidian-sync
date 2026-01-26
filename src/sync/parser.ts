@@ -33,7 +33,7 @@ export interface ParsedMarkdown {
 export function parseMarkdown(content: string): ParsedMarkdown {
     // Try to extract title from frontmatter only
     let title = '';
-    
+
     // Check for frontmatter (content between --- markers at start)
     if (content.startsWith('---')) {
         const endIndex = content.indexOf('---', 3);
