@@ -1,4 +1,5 @@
 import { requestUrl, RequestUrlParam, RequestUrlResponse } from 'obsidian';
+import { TokenManager } from '../auth/tokenManager';
 import {
     ApiError,
     CreateEntryRequest,
@@ -13,7 +14,6 @@ import {
     UpdateEntryRequest
 } from '../types';
 import { CacheManager } from './cache';
-import { TokenManager } from '../auth/tokenManager';
 
 /**
  * API client for Journal Wise REST API
@@ -27,7 +27,7 @@ export class ApiClient {
         this.settings = settings;
         this.cache = new CacheManager();
         this.tokenManager = new TokenManager(settings.apiUrl);
-        
+
         // Initialize token manager if we have tokens
         if (settings.apiToken && settings.refreshToken) {
             this.tokenManager.initialize(settings.apiToken, settings.refreshToken).catch(error => {
@@ -42,7 +42,7 @@ export class ApiClient {
     updateSettings(settings: JournalWiseSettings): void {
         this.settings = settings;
         this.tokenManager.updateApiUrl(settings.apiUrl);
-        
+
         // Reinitialize if tokens changed
         if (settings.apiToken && settings.refreshToken) {
             this.tokenManager.initialize(settings.apiToken, settings.refreshToken).catch(error => {
@@ -95,13 +95,13 @@ export class ApiClient {
             if (error.status === 401 && retryCount < 1) {
                 console.log('Got 401, attempting token refresh and retry...');
                 const newTokens = await this.tokenManager.handleUnauthorized();
-                
+
                 if (newTokens) {
                     // Retry the request once with new token
                     return this.request<T>(method, endpoint, body, retryCount + 1);
                 }
             }
-            
+
             // Parse API error response and preserve status code
             if (error.status && error.json) {
                 const apiError = error.json as ApiError;

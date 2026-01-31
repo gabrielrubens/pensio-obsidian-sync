@@ -77,9 +77,57 @@ export class JournalWiseSettingTab extends PluginSettingTab {
                     .onChange(async (value) => {
                         this.plugin.settings.apiToken = value.trim();
                         await this.plugin.saveSettings();
+                        this.plugin.apiClient.updateSettings(this.plugin.settings);
                     });
                 text.inputEl.type = 'password';
             });
+
+        // Token status and management
+        const tokenManager = this.plugin.apiClient.getTokenManager();
+
+        // Show token storage method
+        const storageMethod = tokenManager.getStorageMethod();
+        new Setting(containerEl)
+            .setName('Token Storage')
+            .setDesc(`Current method: ${storageMethod}`)
+            .setClass('setting-item-description');
+
+        // Token expiry display
+        tokenManager.getTokenExpiry().then(expiry => {
+            if (expiry) {
+                const timeUntilExpiry = expiry.getTime() - Date.now();
+                const hoursUntilExpiry = Math.floor(timeUntilExpiry / (1000 * 60 * 60));
+                const expiryText = hoursUntilExpiry > 0
+                    ? `Token expires in ${hoursUntilExpiry} hours (${expiry.toLocaleString()})`
+                    : 'Token expired';
+
+                new Setting(containerEl)
+                    .setName('Token Status')
+                    .setDesc(expiryText)
+                    .addButton(button => button
+                        .setButtonText('Refresh Now')
+                        .onClick(async () => {
+                            try {
+                                button.setDisabled(true);
+                                button.setButtonText('Refreshing...');
+                                await this.plugin.apiClient.refreshToken();
+                                new Notice('✓ Token refreshed successfully');
+                                button.setButtonText('Success');
+                                // Refresh the settings display
+                                setTimeout(() => this.display(), 1000);
+                            } catch (error) {
+                                new Notice(`✗ Failed to refresh token: ${error.message}`);
+                                button.setButtonText('Failed');
+                                console.error('Token refresh failed:', error);
+                            } finally {
+                                setTimeout(() => {
+                                    button.setDisabled(false);
+                                    button.setButtonText('Refresh Now');
+                                }, 2000);
+                            }
+                        }));
+            }
+        });
 
         // Test connection button
         new Setting(containerEl)

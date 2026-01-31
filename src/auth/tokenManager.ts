@@ -9,7 +9,6 @@
 
 import { Notice, requestUrl } from 'obsidian';
 import { TokenData, TokenStorage } from './tokenStorage';
-import { TokenResponse } from '../types';
 
 export class TokenManager {
     private storage: TokenStorage;
@@ -28,7 +27,7 @@ export class TokenManager {
     async initialize(accessToken: string, refreshToken: string): Promise<void> {
         // Calculate expiry (access tokens are valid for 24 hours)
         const expiresAt = Date.now() + (24 * 60 * 60 * 1000);
-        
+
         const tokens: TokenData = {
             accessToken,
             refreshToken,
@@ -51,7 +50,7 @@ export class TokenManager {
         // Check if token is expired or will expire soon (within 1 hour)
         const now = Date.now();
         const oneHour = 60 * 60 * 1000;
-        
+
         if (tokens.expiresAt - now < oneHour) {
             console.log('Token expiring soon, refreshing...');
             try {
@@ -78,7 +77,7 @@ export class TokenManager {
         }
 
         this.refreshPromise = this._performRefresh();
-        
+
         try {
             const newTokens = await this.refreshPromise;
             return newTokens;
@@ -109,7 +108,7 @@ export class TokenManager {
             });
 
             const data: { access: string } = response.json;
-            
+
             // Update stored tokens with new access token
             const expiresAt = Date.now() + (24 * 60 * 60 * 1000);
             const newTokens: TokenData = {
@@ -125,13 +124,13 @@ export class TokenManager {
             return newTokens;
         } catch (error) {
             console.error('Token refresh failed:', error);
-            
+
             // If refresh fails with 401, clear tokens (refresh token is invalid)
             if (error.status === 401) {
                 await this.clearTokens();
                 new Notice('Authentication expired. Please log in again.');
             }
-            
+
             throw new Error('Failed to refresh authentication token');
         }
     }

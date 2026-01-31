@@ -56,7 +56,7 @@ export class TokenStorage {
                 const { safeStorage } = require('electron');
                 const encrypted = safeStorage.encryptString(tokenJson);
                 const base64 = encrypted.toString('base64');
-                
+
                 // Store in localStorage with a marker that it's encrypted
                 localStorage.setItem(this.storageKey, `encrypted:${base64}`);
             } else {
@@ -64,7 +64,7 @@ export class TokenStorage {
                 // For mobile or unsupported platforms
                 const obfuscated = this.obfuscate(tokenJson);
                 localStorage.setItem(this.storageKey, `obfuscated:${obfuscated}`);
-                
+
                 // Warn user once that tokens are not fully encrypted
                 if (!localStorage.getItem('journalwise-storage-warning-shown')) {
                     new Notice(
@@ -110,7 +110,7 @@ export class TokenStorage {
             }
 
             const tokens: TokenData = JSON.parse(tokenJson);
-            
+
             // Validate token data structure
             if (!tokens.accessToken || !tokens.refreshToken || !tokens.expiresAt) {
                 console.warn('Invalid token data structure, clearing storage');
