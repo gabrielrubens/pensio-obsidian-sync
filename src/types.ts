@@ -4,6 +4,7 @@
 export interface JournalWiseSettings {
     apiUrl: string;
     apiToken: string;
+    refreshToken: string; // Store refresh token for auto-renewal
     deviceId: string;
     autoSync: boolean;
     syncInterval: number; // minutes
@@ -21,6 +22,7 @@ export interface JournalWiseSettings {
 export const DEFAULT_SETTINGS: JournalWiseSettings = {
     apiUrl: '',
     apiToken: '',
+    refreshToken: '',
     deviceId: '',
     autoSync: false,
     syncInterval: 5,

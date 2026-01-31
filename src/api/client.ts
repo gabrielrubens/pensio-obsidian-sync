@@ -13,19 +13,27 @@ import {
     UpdateEntryRequest
 } from '../types';
 import { CacheManager } from './cache';
+import { TokenManager } from '../auth/tokenManager';
 
 /**
  * API client for Journal Wise REST API
  */
 export class ApiClient {
     private settings: JournalWiseSettings;
-    private accessToken: string;
     private cache: CacheManager;
+    private tokenManager: TokenManager;
 
     constructor(settings: JournalWiseSettings) {
         this.settings = settings;
-        this.accessToken = settings.apiToken;
         this.cache = new CacheManager();
+        this.tokenManager = new TokenManager(settings.apiUrl);
+        
+        // Initialize token manager if we have tokens
+        if (settings.apiToken && settings.refreshToken) {
+            this.tokenManager.initialize(settings.apiToken, settings.refreshToken).catch(error => {
+                console.error('Failed to initialize token manager:', error);
+            });
+        }
     }
 
     /**
@@ -33,16 +41,24 @@ export class ApiClient {
      */
     updateSettings(settings: JournalWiseSettings): void {
         this.settings = settings;
-        this.accessToken = settings.apiToken;
+        this.tokenManager.updateApiUrl(settings.apiUrl);
+        
+        // Reinitialize if tokens changed
+        if (settings.apiToken && settings.refreshToken) {
+            this.tokenManager.initialize(settings.apiToken, settings.refreshToken).catch(error => {
+                console.error('Failed to reinitialize token manager:', error);
+            });
+        }
     }
 
     /**
-     * Make authenticated API request
+     * Make authenticated API request with automatic token refresh
      */
     private async request<T>(
         method: string,
         endpoint: string,
-        body?: any
+        body?: any,
+        retryCount = 0
     ): Promise<T> {
         const url = `${this.settings.apiUrl}${endpoint}`;
 
@@ -54,9 +70,10 @@ export class ApiClient {
             },
         };
 
-        // Add auth header if we have a token
-        if (this.accessToken && options.headers) {
-            options.headers['Authorization'] = `Bearer ${this.accessToken}`;
+        // Get current access token (will auto-refresh if needed)
+        const accessToken = await this.tokenManager.getAccessToken();
+        if (accessToken && options.headers) {
+            options.headers['Authorization'] = `Bearer ${accessToken}`;
         }
 
         // Add body if provided
@@ -74,6 +91,17 @@ export class ApiClient {
 
             return response.json as T;
         } catch (error) {
+            // Handle 401 Unauthorized by attempting token refresh and retry
+            if (error.status === 401 && retryCount < 1) {
+                console.log('Got 401, attempting token refresh and retry...');
+                const newTokens = await this.tokenManager.handleUnauthorized();
+                
+                if (newTokens) {
+                    // Retry the request once with new token
+                    return this.request<T>(method, endpoint, body, retryCount + 1);
+                }
+            }
+            
             // Parse API error response and preserve status code
             if (error.status && error.json) {
                 const apiError = error.json as ApiError;
@@ -146,8 +174,8 @@ export class ApiClient {
             }
         );
 
-        // Store access token
-        this.accessToken = response.access;
+        // Initialize token manager with new tokens
+        await this.tokenManager.initialize(response.access, response.refresh);
 
         return response;
     }
@@ -465,5 +493,34 @@ export class ApiClient {
      */
     private generateDeviceId(): string {
         return `obsidian-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+    }
+
+    /**
+     * Get token manager for advanced operations
+     */
+    getTokenManager(): TokenManager {
+        return this.tokenManager;
+    }
+
+    /**
+     * Manual token refresh (for testing or force refresh)
+     */
+    async refreshToken(): Promise<void> {
+        await this.tokenManager.refreshToken();
+    }
+
+    /**
+     * Clear tokens and logout
+     */
+    async logout(): Promise<void> {
+        await this.tokenManager.clearTokens();
+        this.cache.clearAll();
+    }
+
+    /**
+     * Check if authenticated (has valid tokens)
+     */
+    async isAuthenticated(): Promise<boolean> {
+        return this.tokenManager.hasTokens() && !(await this.tokenManager.isTokenExpired());
     }
 }
