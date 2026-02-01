@@ -68,10 +68,26 @@ export default class JournalWisePlugin extends Plugin {
             id: 'sync-now',
             name: 'Sync now',
             callback: async () => {
-                new Notice('Starting sync...');
+                new Notice('Starting incremental sync...');
                 try {
-                    await this.syncEngine.syncAll();
+                    await this.syncEngine.syncAll(false);  // Incremental sync
                     new Notice('Sync completed successfully');
+                } catch (error) {
+                    new Notice(`Sync failed: ${error.message}`);
+                    console.error('Sync error:', error);
+                }
+            }
+        });
+
+        // Force sync all files (ignore change detection)
+        this.addCommand({
+            id: 'force-sync-all',
+            name: 'Force sync all files',
+            callback: async () => {
+                new Notice('Starting force sync (all files)...');
+                try {
+                    await this.syncEngine.syncAll(true);  // Force sync
+                    new Notice('Force sync completed successfully');
                 } catch (error) {
                     new Notice(`Sync failed: ${error.message}`);
                     console.error('Sync error:', error);

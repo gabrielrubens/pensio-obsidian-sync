@@ -68,16 +68,37 @@ export class JournalWiseSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('API Token')
-            .setDesc('Your authentication token (generate in Journal Wise web UI)')
+            .setName('Access Token')
+            .setDesc('Your access token (24-hour validity). Get both tokens from: curl -X POST http://localhost:8000/api/v1/auth/token/ with your email/password')
             .addText(text => {
                 text
-                    .setPlaceholder('Enter your API token')
+                    .setPlaceholder('Enter your access token')
                     .setValue(this.plugin.settings.apiToken)
                     .onChange(async (value) => {
                         this.plugin.settings.apiToken = value.trim();
                         await this.plugin.saveSettings();
-                        this.plugin.apiClient.updateSettings(this.plugin.settings);
+                        // Reinitialize if both tokens are now present
+                        if (this.plugin.settings.apiToken && this.plugin.settings.refreshToken) {
+                            this.plugin.apiClient.updateSettings(this.plugin.settings);
+                        }
+                    });
+                text.inputEl.type = 'password';
+            });
+
+        new Setting(containerEl)
+            .setName('Refresh Token')
+            .setDesc('Your refresh token (90-day validity). REQUIRED: You must provide BOTH tokens for authentication to work.')
+            .addText(text => {
+                text
+                    .setPlaceholder('Enter your refresh token')
+                    .setValue(this.plugin.settings.refreshToken)
+                    .onChange(async (value) => {
+                        this.plugin.settings.refreshToken = value.trim();
+                        await this.plugin.saveSettings();
+                        // Reinitialize if both tokens are now present
+                        if (this.plugin.settings.apiToken && this.plugin.settings.refreshToken) {
+                            this.plugin.apiClient.updateSettings(this.plugin.settings);
+                        }
                     });
                 text.inputEl.type = 'password';
             });
@@ -130,30 +151,36 @@ export class JournalWiseSettingTab extends PluginSettingTab {
         });
 
         // Test connection button
+        const hasBothTokens = this.plugin.settings.apiToken && this.plugin.settings.refreshToken;
         new Setting(containerEl)
             .setName('Test connection')
-            .setDesc('Verify your API credentials')
-            .addButton(button => button
-                .setButtonText('Test')
-                .onClick(async () => {
-                    try {
-                        button.setDisabled(true);
-                        button.setButtonText('Testing...');
+            .setDesc(hasBothTokens 
+                ? 'Verify your API credentials' 
+                : '⚠️ Please provide both Access Token and Refresh Token first')
+            .addButton(button => {
+                button
+                    .setButtonText('Test')
+                    .setDisabled(!hasBothTokens)
+                    .onClick(async () => {
+                        try {
+                            button.setDisabled(true);
+                            button.setButtonText('Testing...');
 
-                        const status = await this.plugin.apiClient.getSyncStatus();
-                        new Notice(`✓ Connected! ${status.total_entries} entries synced`);
-                        button.setButtonText('Success');
-                    } catch (error) {
-                        new Notice(`✗ Connection failed: ${error.message}`);
-                        button.setButtonText('Failed');
-                        console.error('Connection test failed:', error);
-                    } finally {
-                        setTimeout(() => {
-                            button.setDisabled(false);
-                            button.setButtonText('Test');
-                        }, 2000);
-                    }
-                }));
+                            const status = await this.plugin.apiClient.getSyncStatus();
+                            new Notice(`✓ Connected! ${status.total_entries} entries synced`);
+                            button.setButtonText('Success');
+                        } catch (error) {
+                            new Notice(`✗ Connection failed: ${error.message}`);
+                            button.setButtonText('Failed');
+                            console.error('Connection test failed:', error);
+                        } finally {
+                            setTimeout(() => {
+                                button.setDisabled(false);
+                                button.setButtonText('Test');
+                            }, 2000);
+                        }
+                    });
+            });
 
         // Sync settings
         containerEl.createEl('h3', { text: 'Sync Options' });

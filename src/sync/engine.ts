@@ -364,15 +364,18 @@ export class SyncEngine {
 
     /**
      * Sync a single file
+     * @returns true if file was synced, false if skipped
      */
-    async syncFile(file: TFile): Promise<void> {
+    async syncFile(file: TFile, forceSync: boolean = false): Promise<boolean> {
         console.log('Syncing file:', file.path);
 
         // Check if file needs syncing (incremental sync optimization)
-        const needsSync = await this.needsSync(file);
-        if (!needsSync) {
-            console.log('File unchanged, skipping sync:', file.path);
-            return;
+        if (!forceSync) {
+            const needsSync = await this.needsSync(file);
+            if (!needsSync) {
+                console.log('File unchanged, skipping sync:', file.path);
+                return false;
+            }
         }
 
         // Determine content type based on folder
@@ -402,6 +405,7 @@ export class SyncEngine {
 
         // Update file tracking after successful sync
         this.updateFileTracking(file);
+        return true;
     }
 
     /**
@@ -566,8 +570,8 @@ export class SyncEngine {
     /**
      * Sync all files in configured folders
      */
-    async syncAll(): Promise<void> {
-        console.log('Starting full sync');
+    async syncAll(forceSync: boolean = false): Promise<void> {
+        console.log(forceSync ? 'Starting force sync (ignoring change detection)' : 'Starting incremental sync');
 
         const syncStartTime = Date.now();
         const files = this.app.vault.getMarkdownFiles();
@@ -579,13 +583,21 @@ export class SyncEngine {
         const errors: string[] = [];
 
         // Sync all local files to server
+        let skippedCount = 0;
         for (const file of filesToSync) {
             try {
-                await this.syncFile(file);
+                const synced = await this.syncFile(file, forceSync);
+                if (!synced) {
+                    skippedCount++;
+                }
             } catch (error) {
                 console.error(`Failed to sync ${file.path}:`, error);
                 errors.push(`${file.path}: ${error.message || error}`);
             }
+        }
+
+        if (skippedCount > 0) {
+            console.log(`Skipped ${skippedCount} unchanged files`);
         }
 
         // Mirror sync: Delete items from server that don't exist locally
