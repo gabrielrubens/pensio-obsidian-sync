@@ -154,8 +154,8 @@ export class JournalWiseSettingTab extends PluginSettingTab {
         const hasBothTokens = this.plugin.settings.apiToken && this.plugin.settings.refreshToken;
         new Setting(containerEl)
             .setName('Test connection')
-            .setDesc(hasBothTokens 
-                ? 'Verify your API credentials' 
+            .setDesc(hasBothTokens
+                ? 'Verify your API credentials'
                 : '⚠️ Please provide both Access Token and Refresh Token first')
             .addButton(button => {
                 button
