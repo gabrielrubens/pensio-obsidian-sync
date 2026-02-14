@@ -1,6 +1,6 @@
-# Journal Wise Sync - Obsidian Plugin
+# Pensio Sync - Obsidian Plugin
 
-Sync your Obsidian vault with [Journal Wise](https://github.com/gabrielrubens/journal-wise) for AI-powered emotional insights and reflections.
+Sync your Obsidian vault with [Pensio](https://github.com/gabrielrubens/pensio) for AI-powered emotional insights and reflections.
 
 ## Features
 
@@ -15,23 +15,23 @@ Sync your Obsidian vault with [Journal Wise](https://github.com/gabrielrubens/jo
 
 ### From Obsidian Community Plugins (Coming Soon)
 1. Open Settings → Community Plugins
-2. Search for "Journal Wise Sync"
+2. Search for "Pensio Sync"
 3. Click Install
 
 ### Manual Installation
-1. Download latest release from [GitHub Releases](https://github.com/gabrielrubens/journal-wise/releases)
-2. Extract to `.obsidian/plugins/journal-wise-sync/`
+1. Download latest release from [GitHub Releases](https://github.com/gabrielrubens/pensio/releases)
+2. Extract to `.obsidian/plugins/pensio-sync/`
 3. Reload Obsidian
 4. Enable plugin in Settings → Community Plugins
 
 ## Setup
 
-1. **Install Journal Wise Backend**
+1. **Install Pensio Backend**
    - Follow [backend setup instructions](../README.md)
    - Get your server URL (e.g., `https://journal.example.com`)
 
 2. **Configure Plugin**
-   - Open Settings → Journal Wise Sync
+   - Open Settings → Pensio Sync
    - Enter API URL
    - Enter API token (generate in web UI)
    - Set device name (optional)
@@ -99,7 +99,7 @@ npm run build
 ### Test in Obsidian
 
 1. Build the plugin
-2. Copy `main.js`, `manifest.json`, `styles.css` to test vault's `.obsidian/plugins/journal-wise-sync/`
+2. Copy `main.js`, `manifest.json`, `styles.css` to test vault's `.obsidian/plugins/pensio-sync/`
 3. Reload Obsidian
 
 ### Lint
@@ -153,9 +153,9 @@ obsidian-plugin/
 
 ## Support
 
-- [Issues](https://github.com/gabrielrubens/journal-wise/issues)
-- [Discussions](https://github.com/gabrielrubens/journal-wise/discussions)
-- [Documentation](https://github.com/gabrielrubens/journal-wise)
+- [Issues](https://github.com/gabrielrubens/pensio/issues)
+- [Discussions](https://github.com/gabrielrubens/pensio/discussions)
+- [Documentation](https://github.com/gabrielrubens/pensio)
 
 ## License
 

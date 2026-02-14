@@ -1,17 +1,17 @@
 import { Notice, Plugin } from 'obsidian';
 import { ApiClient } from './api/client';
-import { JournalWiseSettingTab } from './settings';
+import { PensioSettingTab } from './settings';
 import { SyncEngine } from './sync/engine';
-import { DEFAULT_SETTINGS, JournalWiseSettings } from './types';
+import { DEFAULT_SETTINGS, PensioSettings } from './types';
 
-export default class JournalWisePlugin extends Plugin {
-    settings: JournalWiseSettings;
+export default class PensioPlugin extends Plugin {
+    settings: PensioSettings;
     apiClient: ApiClient;
     syncEngine: SyncEngine;
     statusBarItem: HTMLElement;
 
     async onload() {
-        console.log('Loading Journal Wise plugin');
+        console.log('Loading Pensio plugin');
 
         // Load settings
         await this.loadSettings();
@@ -27,7 +27,7 @@ export default class JournalWisePlugin extends Plugin {
         this.updateStatusBar('idle');
 
         // Add settings tab
-        this.addSettingTab(new JournalWiseSettingTab(this.app, this));
+        this.addSettingTab(new PensioSettingTab(this.app, this));
 
         // Register commands
         this.registerCommands();
@@ -37,11 +37,11 @@ export default class JournalWisePlugin extends Plugin {
             this.syncEngine.startWatching();
         }
 
-        new Notice('Journal Wise plugin loaded');
+        new Notice('Pensio plugin loaded');
     }
 
     onunload() {
-        console.log('Unloading Journal Wise plugin');
+        console.log('Unloading Pensio plugin');
         this.syncEngine.stopWatching();
     }
 
@@ -161,7 +161,7 @@ export default class JournalWisePlugin extends Plugin {
             success: '✅'
         };
 
-        this.statusBarItem.setText(`${icons[status]} Journal Wise`);
+        this.statusBarItem.setText(`${icons[status]} Pensio`);
 
         // Reset to idle after success/error
         if (status === 'success' || status === 'error') {

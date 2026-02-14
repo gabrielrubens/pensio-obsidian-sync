@@ -1,6 +1,6 @@
 import { CreateEntryRequest, CreatePersonRequest, CreatePromptRequest, DEFAULT_SETTINGS, PersonResponse, PromptResponse } from '../types';
 
-describe('JournalWiseSettings', () => {
+describe('PensioSettings', () => {
     it('should have correct default settings', () => {
         expect(DEFAULT_SETTINGS.apiUrl).toBe('');
         expect(DEFAULT_SETTINGS.apiToken).toBe('');

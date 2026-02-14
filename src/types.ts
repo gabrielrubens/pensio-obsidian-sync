@@ -1,7 +1,7 @@
 /**
  * Plugin settings interface
  */
-export interface JournalWiseSettings {
+export interface PensioSettings {
     apiUrl: string;
     apiToken: string;
     refreshToken: string; // Store refresh token for auto-renewal
@@ -19,7 +19,7 @@ export interface JournalWiseSettings {
 /**
  * Default plugin settings
  */
-export const DEFAULT_SETTINGS: JournalWiseSettings = {
+export const DEFAULT_SETTINGS: PensioSettings = {
     apiUrl: '',
     apiToken: '',
     refreshToken: '',

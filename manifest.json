@@ -1,10 +1,10 @@
 {
-    "id": "journal-wise-sync",
-    "name": "Journal Wise Sync",
+    "id": "pensio-sync",
+    "name": "Pensio Sync",
     "version": "0.1.0",
     "minAppVersion": "1.4.0",
-    "description": "Sync your Obsidian vault with Journal Wise for emotional insights and AI-powered reflections",
-    "author": "Journal Wise",
-    "authorUrl": "https://github.com/gabrielrubens/journal-wise",
+    "description": "Sync your Obsidian vault with Pensio for emotional insights and AI-powered reflections",
+    "author": "Pensio",
+    "authorUrl": "https://github.com/gabrielrubens/pensio",
     "isDesktopOnly": false
 }

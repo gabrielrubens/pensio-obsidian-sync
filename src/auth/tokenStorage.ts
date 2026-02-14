@@ -21,7 +21,7 @@ export interface TokenData {
  * Token storage service with secure OS-level encryption
  */
 export class TokenStorage {
-    private storageKey = 'journalwise-tokens';
+    private storageKey = 'pensio-tokens';
     private isSafeStorageAvailable: boolean;
 
     constructor() {
@@ -66,13 +66,13 @@ export class TokenStorage {
                 localStorage.setItem(this.storageKey, `obfuscated:${obfuscated}`);
 
                 // Warn user once that tokens are not fully encrypted
-                if (!localStorage.getItem('journalwise-storage-warning-shown')) {
+                if (!localStorage.getItem('pensio-storage-warning-shown')) {
                     new Notice(
-                        'Journal Wise: Token storage using basic encryption. ' +
+                        'Pensio: Token storage using basic encryption. ' +
                         'For maximum security, use the desktop app.',
                         8000
                     );
-                    localStorage.setItem('journalwise-storage-warning-shown', 'true');
+                    localStorage.setItem('pensio-storage-warning-shown', 'true');
                 }
             }
         } catch (error) {

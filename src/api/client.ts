@@ -6,7 +6,7 @@ import {
     CreatePersonRequest,
     CreatePromptRequest,
     EntryResponse,
-    JournalWiseSettings,
+    PensioSettings,
     PersonResponse,
     PromptResponse,
     SyncStatusResponse,
@@ -16,14 +16,14 @@ import {
 import { CacheManager } from './cache';
 
 /**
- * API client for Journal Wise REST API
+ * API client for Pensio REST API
  */
 export class ApiClient {
-    private settings: JournalWiseSettings;
+    private settings: PensioSettings;
     private cache: CacheManager;
     private tokenManager: TokenManager;
 
-    constructor(settings: JournalWiseSettings) {
+    constructor(settings: PensioSettings) {
         this.settings = settings;
         this.cache = new CacheManager();
         this.tokenManager = new TokenManager(settings.apiUrl);
@@ -39,7 +39,7 @@ export class ApiClient {
     /**
      * Update settings (called when user changes settings)
      */
-    updateSettings(settings: JournalWiseSettings): void {
+    updateSettings(settings: PensioSettings): void {
         this.settings = settings;
         this.tokenManager.updateApiUrl(settings.apiUrl);
 

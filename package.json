@@ -1,7 +1,7 @@
 {
-    "name": "journal-wise-sync",
+    "name": "pensio-sync",
     "version": "0.1.0",
-    "description": "Obsidian plugin for Journal Wise sync",
+    "description": "Obsidian plugin for Pensio sync",
     "main": "main.js",
     "scripts": {
         "dev": "node esbuild.config.mjs",
@@ -20,7 +20,7 @@
         "sync",
         "emotional-intelligence"
     ],
-    "author": "Journal Wise",
+    "author": "Pensio",
     "license": "MIT",
     "devDependencies": {
         "@types/jest": "^30.0.0",

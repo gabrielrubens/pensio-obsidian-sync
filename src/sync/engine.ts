@@ -1,6 +1,6 @@
 import { App, TAbstractFile, TFile } from 'obsidian';
 import { ApiClient } from '../api/client';
-import { CreateEntryRequest, CreatePersonRequest, CreatePromptRequest, JournalWiseSettings, SyncQueueItem } from '../types';
+import { CreateEntryRequest, CreatePersonRequest, CreatePromptRequest, PensioSettings, SyncQueueItem } from '../types';
 import { parseMarkdown } from './parser';
 
 /**
@@ -8,7 +8,7 @@ import { parseMarkdown } from './parser';
  */
 export class SyncEngine {
     private app: App;
-    private settings: JournalWiseSettings;
+    private settings: PensioSettings;
     private apiClient: ApiClient;
     private syncQueue: SyncQueueItem[] = [];
     private isWatching = false;
@@ -27,7 +27,7 @@ export class SyncEngine {
     private readonly boundOnFileModified: (file: TAbstractFile) => Promise<void>;
     private readonly boundOnFileDeleted: (file: TAbstractFile) => Promise<void>;
 
-    constructor(app: App, settings: JournalWiseSettings, apiClient: ApiClient) {
+    constructor(app: App, settings: PensioSettings, apiClient: ApiClient) {
         this.app = app;
         this.settings = settings;
         this.apiClient = apiClient;

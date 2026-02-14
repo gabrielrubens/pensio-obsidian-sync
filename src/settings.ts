@@ -1,5 +1,5 @@
 import { App, FuzzySuggestModal, Notice, PluginSettingTab, Setting, TFolder } from 'obsidian';
-import JournalWisePlugin from './main';
+import PensioPlugin from './main';
 
 /**
  * Folder suggest modal for selecting folders
@@ -38,10 +38,10 @@ class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
     }
 }
 
-export class JournalWiseSettingTab extends PluginSettingTab {
-    plugin: JournalWisePlugin;
+export class PensioSettingTab extends PluginSettingTab {
+    plugin: PensioPlugin;
 
-    constructor(app: App, plugin: JournalWisePlugin) {
+    constructor(app: App, plugin: PensioPlugin) {
         super(app, plugin);
         this.plugin = plugin;
     }
@@ -51,14 +51,14 @@ export class JournalWiseSettingTab extends PluginSettingTab {
 
         containerEl.empty();
 
-        containerEl.createEl('h2', { text: 'Journal Wise Sync Settings' });
+        containerEl.createEl('h2', { text: 'Pensio Sync Settings' });
 
         // Connection settings
         containerEl.createEl('h3', { text: 'Connection' });
 
         new Setting(containerEl)
             .setName('API URL')
-            .setDesc('Your Journal Wise server URL (e.g., https://journal.example.com)')
+            .setDesc('Your Pensio server URL (e.g., https://journal.example.com)')
             .addText(text => text
                 .setPlaceholder('https://journal.example.com')
                 .setValue(this.plugin.settings.apiUrl)
