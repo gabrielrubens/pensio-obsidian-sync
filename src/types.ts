@@ -9,7 +9,6 @@ export interface PensioSettings {
     autoSync: boolean;
     syncInterval: number; // minutes
     journalFolder: string; // folder for journal entries
-    promptFolder: string; // folder for prompts
     peopleFolder: string; // folder for people notes
     excludePatterns: string[]; // glob patterns to exclude
     maxEntrySizeMB: number;
@@ -27,7 +26,6 @@ export const DEFAULT_SETTINGS: PensioSettings = {
     autoSync: false,
     syncInterval: 5,
     journalFolder: 'Journal',
-    promptFolder: 'Prompts',
     peopleFolder: 'People',
     excludePatterns: ['.obsidian/**', '.trash/**'],
     maxEntrySizeMB: 5,
@@ -87,20 +85,6 @@ export interface PersonResponse {
     updated_at: string;
 }
 
-export interface PromptResponse {
-    id: string;
-    title: string;
-    content: string;
-    content_html: string;
-    description: string;
-    source: string;
-    file_path: string;
-    file_hash: string;
-    created_at: string;
-    updated_at: string;
-    usage_count: number;
-}
-
 export interface CreateEntryRequest {
     title: string;
     content_html: string;
@@ -110,14 +94,6 @@ export interface CreateEntryRequest {
     file_path: string;
     frontmatter: Record<string, any>;
     file_modified_at: string;
-}
-
-export interface CreatePromptRequest {
-    title: string;
-    content: string;
-    content_html: string;
-    description: string;
-    file_path: string;
 }
 
 export interface CreatePersonRequest {

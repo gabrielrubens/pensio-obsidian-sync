@@ -1,4 +1,4 @@
-import { EntryResponse, PersonResponse, PromptResponse } from '../types';
+import { EntryResponse, PersonResponse } from '../types';
 
 interface CacheEntry<T> {
     data: T;
@@ -14,11 +14,9 @@ export class CacheManager {
 
     private peopleCache = new Map<string, CacheEntry<PersonResponse>>();
     private entriesCache = new Map<string, CacheEntry<EntryResponse>>();
-    private promptsCache = new Map<string, CacheEntry<PromptResponse>>();
 
     private allPeopleCache: CacheEntry<PersonResponse[]> | null = null;
     private allEntriesCache: CacheEntry<EntryResponse[]> | null = null;
-    private allPromptsCache: CacheEntry<PromptResponse[]> | null = null;
 
     /**
      * Get cached person by ID
@@ -58,27 +56,6 @@ export class CacheManager {
     setEntry(entry: EntryResponse): void {
         this.entriesCache.set(entry.id, {
             data: entry,
-            timestamp: Date.now()
-        });
-    }
-
-    /**
-     * Get cached prompt by ID
-     */
-    getPrompt(id: string): PromptResponse | null {
-        const cached = this.promptsCache.get(id);
-        if (cached && !this.isExpired(cached.timestamp)) {
-            return cached.data;
-        }
-        return null;
-    }
-
-    /**
-     * Cache prompt
-     */
-    setPrompt(prompt: PromptResponse): void {
-        this.promptsCache.set(prompt.id, {
-            data: prompt,
             timestamp: Date.now()
         });
     }
@@ -128,28 +105,6 @@ export class CacheManager {
     }
 
     /**
-     * Get all cached prompts
-     */
-    getAllPrompts(): PromptResponse[] | null {
-        if (this.allPromptsCache && !this.isExpired(this.allPromptsCache.timestamp)) {
-            return this.allPromptsCache.data;
-        }
-        return null;
-    }
-
-    /**
-     * Cache all prompts
-     */
-    setAllPrompts(prompts: PromptResponse[]): void {
-        this.allPromptsCache = {
-            data: prompts,
-            timestamp: Date.now()
-        };
-        // Also cache individually
-        prompts.forEach(prompt => this.setPrompt(prompt));
-    }
-
-    /**
      * Find person in cache by name
      */
     findPersonByName(name: string): PersonResponse | null {
@@ -186,18 +141,6 @@ export class CacheManager {
     }
 
     /**
-     * Find prompt in cache by file path
-     */
-    findPromptByPath(filePath: string): PromptResponse | null {
-        for (const entry of this.promptsCache.values()) {
-            if (!this.isExpired(entry.timestamp) && entry.data.file_path === filePath) {
-                return entry.data;
-            }
-        }
-        return null;
-    }
-
-    /**
      * Invalidate person cache (call after create/update/delete)
      */
     invalidatePerson(id?: string): void {
@@ -222,27 +165,13 @@ export class CacheManager {
     }
 
     /**
-     * Invalidate prompt cache (call after create/update/delete)
-     */
-    invalidatePrompt(id?: string): void {
-        if (id) {
-            this.promptsCache.delete(id);
-        } else {
-            this.promptsCache.clear();
-        }
-        this.allPromptsCache = null;
-    }
-
-    /**
      * Clear all caches
      */
     clearAll(): void {
         this.peopleCache.clear();
         this.entriesCache.clear();
-        this.promptsCache.clear();
         this.allPeopleCache = null;
         this.allEntriesCache = null;
-        this.allPromptsCache = null;
     }
 
     /**

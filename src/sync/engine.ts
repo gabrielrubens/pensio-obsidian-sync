@@ -1,6 +1,6 @@
 import { App, TAbstractFile, TFile } from 'obsidian';
 import { ApiClient } from '../api/client';
-import { CreateEntryRequest, CreatePersonRequest, CreatePromptRequest, PensioSettings, SyncQueueItem } from '../types';
+import { CreateEntryRequest, CreatePersonRequest, PensioSettings, SyncQueueItem } from '../types';
 import { parseMarkdown } from './parser';
 
 /**
@@ -225,7 +225,6 @@ export class SyncEngine {
         // Check if in any of the sync folders
         const syncFolders = [
             this.settings.journalFolder,
-            this.settings.promptFolder,
             this.settings.peopleFolder
         ].filter(folder => folder.trim().length > 0);
 
@@ -395,9 +394,7 @@ export class SyncEngine {
         }
 
         // Sync based on content type
-        if (contentType === 'prompt') {
-            await this.syncPrompt(file, parsed);
-        } else if (contentType === 'person') {
+        if (contentType === 'person') {
             await this.syncPerson(file, parsed);
         } else {
             await this.syncEntry(file, parsed);
@@ -411,19 +408,12 @@ export class SyncEngine {
     /**
      * Detect content type based on file path
      */
-    private detectContentType(filePath: string): 'entry' | 'prompt' | 'person' {
-        // Check if in prompt folder
-        if (this.settings.promptFolder && filePath.startsWith(this.settings.promptFolder + '/')) {
-            return 'prompt';
-        }
+    private detectContentType(filePath: string): 'entry' | 'person' {
         // Check if in people folder
         if (this.settings.peopleFolder && filePath.startsWith(this.settings.peopleFolder + '/')) {
             return 'person';
         }
         // Check if exact match (for top-level files)
-        if (this.settings.promptFolder && filePath === this.settings.promptFolder) {
-            return 'prompt';
-        }
         if (this.settings.peopleFolder && filePath === this.settings.peopleFolder) {
             return 'person';
         }
@@ -458,33 +448,6 @@ export class SyncEngine {
             // Create new entry
             await this.apiClient.createEntry(entryData);
             console.log('Created entry:', file.path);
-        }
-    }
-
-    /**
-     * Sync prompt
-     */
-    private async syncPrompt(file: TFile, parsed: any): Promise<void> {
-        // Plugin sends RAW markdown, backend processes everything
-        const promptData: CreatePromptRequest = {
-            title: parsed.title || file.basename,
-            content: parsed.content,  // Raw markdown
-            content_html: parsed.content,  // Backend will render HTML
-            description: '',  // Backend extracts from frontmatter
-            file_path: file.path
-        };
-
-        // Check if prompt exists
-        const existingPrompt = await this.apiClient.findPromptByPath(file.path);
-
-        if (existingPrompt) {
-            // Update existing prompt
-            await this.apiClient.updatePrompt(existingPrompt.id, promptData);
-            console.log('Updated prompt:', file.path);
-        } else {
-            // Create new prompt
-            await this.apiClient.createPrompt(promptData);
-            console.log('Created prompt:', file.path);
         }
     }
 
@@ -546,13 +509,7 @@ export class SyncEngine {
     private async deleteFile(filePath: string): Promise<void> {
         const contentType = this.detectContentType(filePath);
 
-        if (contentType === 'prompt') {
-            const prompt = await this.apiClient.findPromptByPath(filePath);
-            if (prompt) {
-                await this.apiClient.deletePrompt(prompt.id);
-                console.log('Deleted prompt:', filePath);
-            }
-        } else if (contentType === 'person') {
+        if (contentType === 'person') {
             const person = await this.apiClient.findPersonByPath(filePath);
             if (person) {
                 await this.apiClient.deletePerson(person.id);
@@ -638,15 +595,6 @@ export class SyncEngine {
                 if (!localPaths.has(entry.file_path)) {
                     console.log(`Deleting entry not in vault: ${entry.file_path}`);
                     await this.apiClient.deleteEntry(entry.id);
-                }
-            }
-
-            // Get all prompts from server
-            const serverPrompts = await this.apiClient.listPrompts();
-            for (const prompt of serverPrompts) {
-                if (!localPaths.has(prompt.file_path)) {
-                    console.log(`Deleting prompt not in vault: ${prompt.file_path}`);
-                    await this.apiClient.deletePrompt(prompt.id);
                 }
             }
 

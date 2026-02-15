@@ -1,4 +1,4 @@
-import { CreateEntryRequest, CreatePersonRequest, CreatePromptRequest, DEFAULT_SETTINGS, PersonResponse, PromptResponse } from '../types';
+import { CreateEntryRequest, CreatePersonRequest, DEFAULT_SETTINGS, PersonResponse } from '../types';
 
 describe('PensioSettings', () => {
     it('should have correct default settings', () => {
@@ -11,7 +11,6 @@ describe('PensioSettings', () => {
 
     it('should have individual folder settings', () => {
         expect(DEFAULT_SETTINGS.journalFolder).toBe('Journal');
-        expect(DEFAULT_SETTINGS.promptFolder).toBe('Prompts');
         expect(DEFAULT_SETTINGS.peopleFolder).toBe('People');
     });
 
@@ -52,19 +51,6 @@ describe('API Request Types', () => {
 
         expect(entry.title).toBe('Test Entry');
         expect(entry.entry_type).toBe('daily_journal');
-    });
-
-    it('CreatePromptRequest should have all required fields', () => {
-        const prompt: CreatePromptRequest = {
-            title: 'Test Prompt',
-            content: 'What are you grateful for?',
-            content_html: '<p>What are you grateful for?</p>',
-            description: 'Daily gratitude',
-            file_path: 'Prompts/gratitude.md'
-        };
-
-        expect(prompt.title).toBe('Test Prompt');
-        expect(prompt.description).toBe('Daily gratitude');
     });
 
     it('CreatePersonRequest should have all required fields', () => {
@@ -108,39 +94,9 @@ describe('API Response Types', () => {
         expect(person.source).toBe('vault_sync');
     });
 
-    it('PromptResponse should include usage_count', () => {
-        const prompt: PromptResponse = {
-            id: 'uuid-456',
-            title: 'Weekly Review',
-            content: 'Review questions...',
-            content_html: '<p>Review questions...</p>',
-            description: 'End of week reflection',
-            source: 'vault_sync',
-            file_path: 'Prompts/weekly.md',
-            file_hash: 'abc123',
-            created_at: '2026-01-23T12:00:00Z',
-            updated_at: '2026-01-23T12:00:00Z',
-            usage_count: 5
-        };
-
-        expect(prompt.id).toBe('uuid-456');
-        expect(prompt.usage_count).toBe(5);
-    });
 });
 
 describe('Folder Type Detection Logic', () => {
-    it('should detect prompt folder paths correctly', () => {
-        const promptFolder = 'Journal/Prompts';
-
-        // Files inside prompt folder
-        expect('Journal/Prompts/daily.md'.startsWith(promptFolder + '/')).toBe(true);
-        expect('Journal/Prompts/weekly.md'.startsWith(promptFolder + '/')).toBe(true);
-
-        // Files outside prompt folder
-        expect('Journal/entry.md'.startsWith(promptFolder + '/')).toBe(false);
-        expect('People/alice.md'.startsWith(promptFolder + '/')).toBe(false);
-    });
-
     it('should detect people folder paths correctly', () => {
         const peopleFolder = 'People';
 
@@ -150,22 +106,19 @@ describe('Folder Type Detection Logic', () => {
 
         // Files outside people folder
         expect('Journal/entry.md'.startsWith(peopleFolder + '/')).toBe(false);
-        expect('Prompts/daily.md'.startsWith(peopleFolder + '/')).toBe(false);
+        expect('Templates/daily.md'.startsWith(peopleFolder + '/')).toBe(false);
     });
 
     it('should detect journal folder paths correctly', () => {
         const journalFolder = 'Journal';
-        const promptFolder = 'Journal/Prompts';
         const peopleFolder = 'People';
 
-        // Journal files (not in prompt subfolder)
+        // Journal files
         const journalPath = 'Journal/2026-01-23.md';
         const isInJournal = journalPath.startsWith(journalFolder + '/');
-        const isInPrompt = journalPath.startsWith(promptFolder + '/');
         const isInPeople = journalPath.startsWith(peopleFolder + '/');
 
         expect(isInJournal).toBe(true);
-        expect(isInPrompt).toBe(false);
         expect(isInPeople).toBe(false);
     });
 

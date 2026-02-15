@@ -4,11 +4,9 @@ import {
     ApiError,
     CreateEntryRequest,
     CreatePersonRequest,
-    CreatePromptRequest,
     EntryResponse,
     PensioSettings,
     PersonResponse,
-    PromptResponse,
     SyncStatusResponse,
     TokenResponse,
     UpdateEntryRequest
@@ -278,100 +276,6 @@ export class ApiClient {
             this.cache.setEntry(entry);
         }
         return entry;
-    }
-
-    // ========================================================================
-    // Prompt API Methods
-    // ========================================================================
-
-    /**
-     * List all prompts (handles pagination automatically)
-     */
-    async listPrompts(): Promise<PromptResponse[]> {
-        const cached = this.cache.getAllPrompts();
-        if (cached) {
-            return cached;
-        }
-
-        const prompts = await this.fetchAllPages<PromptResponse>('/api/v1/prompts/');
-        this.cache.setAllPrompts(prompts);
-        return prompts;
-    }
-
-    /**
-     * Get single prompt by ID
-     */
-    async getPrompt(id: string): Promise<PromptResponse> {
-        const cached = this.cache.getPrompt(id);
-        if (cached) {
-            return cached;
-        }
-
-        const prompt = await this.request<PromptResponse>(
-            'GET',
-            `/api/v1/prompts/${id}/`
-        );
-        this.cache.setPrompt(prompt);
-        return prompt;
-    }
-
-    /**
-     * Create new prompt
-     */
-    async createPrompt(prompt: CreatePromptRequest): Promise<PromptResponse> {
-        const created = await this.request<PromptResponse>(
-            'POST',
-            '/api/v1/prompts/',
-            prompt
-        );
-        this.cache.invalidatePrompt();
-        this.cache.setPrompt(created);
-        return created;
-    }
-
-    /**
-     * Update existing prompt
-     */
-    async updatePrompt(id: string, prompt: CreatePromptRequest): Promise<PromptResponse> {
-        const updated = await this.request<PromptResponse>(
-            'PUT',
-            `/api/v1/prompts/${id}/`,
-            prompt
-        );
-        this.cache.invalidatePrompt(id);
-        this.cache.setPrompt(updated);
-        return updated;
-    }
-
-    /**
-     * Delete prompt
-     */
-    async deletePrompt(id: string): Promise<void> {
-        await this.request<void>(
-            'DELETE',
-            `/api/v1/prompts/${id}/`
-        );
-        this.cache.invalidatePrompt(id);
-    }
-
-    /**
-     * Find prompt by file path (efficient - uses query parameter)
-     */
-    async findPromptByPath(filePath: string): Promise<PromptResponse | null> {
-        const cached = this.cache.findPromptByPath(filePath);
-        if (cached) {
-            return cached;
-        }
-
-        const response = await this.request<{ results: PromptResponse[] }>(
-            'GET',
-            `/api/v1/prompts/?file_path=${encodeURIComponent(filePath)}`
-        );
-        const prompt = response.results.length > 0 ? response.results[0] : null;
-        if (prompt) {
-            this.cache.setPrompt(prompt);
-        }
-        return prompt;
     }
 
     // ========================================================================

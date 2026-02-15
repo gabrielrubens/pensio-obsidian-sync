@@ -233,28 +233,6 @@ export class PensioSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('Prompts folder')
-            .setDesc('Folder containing writing prompts')
-            .addText(text => {
-                text
-                    .setPlaceholder('Prompts')
-                    .setValue(this.plugin.settings.promptFolder)
-                    .onChange(async (value) => {
-                        this.plugin.settings.promptFolder = value.trim();
-                        await this.plugin.saveSettings();
-                    });
-            })
-            .addButton(button => button
-                .setButtonText('Browse')
-                .onClick(() => {
-                    new FolderSuggestModal(this.app, async (folder) => {
-                        this.plugin.settings.promptFolder = folder.path;
-                        await this.plugin.saveSettings();
-                        this.display(); // Refresh settings display
-                    }).open();
-                }));
-
-        new Setting(containerEl)
             .setName('People folder')
             .setDesc('Folder containing people notes')
             .addText(text => {
