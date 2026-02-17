@@ -1,5 +1,6 @@
 import { Notice, Plugin } from 'obsidian';
 import { ApiClient } from './api/client';
+import { debugLog, setDebugMode } from './logger';
 import { PensioSettingTab } from './settings';
 import { SyncEngine } from './sync/engine';
 import { DEFAULT_SETTINGS, PensioSettings } from './types';
@@ -11,10 +12,9 @@ export default class PensioPlugin extends Plugin {
     statusBarItem: HTMLElement;
 
     async onload() {
-        console.log('Loading Pensio plugin');
-
         // Load settings
         await this.loadSettings();
+        setDebugMode(this.settings.debugMode);
 
         // Initialize API client
         this.apiClient = new ApiClient(this.settings);
@@ -41,8 +41,8 @@ export default class PensioPlugin extends Plugin {
     }
 
     onunload() {
-        console.log('Unloading Pensio plugin');
         this.syncEngine.stopWatching();
+        this.apiClient.destroy();
     }
 
     async loadSettings() {
@@ -51,6 +51,7 @@ export default class PensioPlugin extends Plugin {
 
     async saveSettings() {
         await this.saveData(this.settings);
+        setDebugMode(this.settings.debugMode);
 
         // Update API client with new settings
         this.apiClient.updateSettings(this.settings);

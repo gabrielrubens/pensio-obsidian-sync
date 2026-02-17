@@ -1,6 +1,6 @@
 {
     "name": "pensio-sync",
-    "version": "0.3.7",
+    "version": "0.1.0",
     "description": "Obsidian plugin for Pensio sync",
     "main": "main.js",
     "scripts": {

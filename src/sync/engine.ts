@@ -1,3 +1,4 @@
+import { debugLog } from '../logger';
 import { App, TAbstractFile, TFile } from 'obsidian';
 import { ApiClient } from '../api/client';
 import { BulkSyncItem, CreateEntryRequest, CreatePersonRequest, PensioSettings, SyncQueueItem } from '../types';
@@ -44,7 +45,7 @@ export class SyncEngine {
     startWatching(): void {
         if (this.isWatching) return;
 
-        console.log('Starting file watcher for auto-sync');
+        debugLog('Starting file watcher for auto-sync');
         this.isWatching = true;
 
         // Register event handlers
@@ -59,7 +60,7 @@ export class SyncEngine {
     stopWatching(): void {
         if (!this.isWatching) return;
 
-        console.log('Stopping file watcher');
+        debugLog('Stopping file watcher');
         this.isWatching = false;
 
         // Unregister event handlers
@@ -75,12 +76,12 @@ export class SyncEngine {
         if (!(file instanceof TFile)) return;
         if (!this.shouldSyncFile(file)) return;
 
-        console.log('File created:', file.path);
+        debugLog('File created:', file.path);
 
         // Check if this is a rename (file with similar name was recently deleted)
         const wasRenamed = this.checkForRename(file);
         if (wasRenamed) {
-            console.log('Detected rename, will update existing record');
+            debugLog('Detected rename, will update existing record');
             // Treat as update, not create
             this.debounceSync(file.path, 'update');
         } else {
@@ -95,7 +96,7 @@ export class SyncEngine {
         if (!(file instanceof TFile)) return;
         if (!this.shouldSyncFile(file)) return;
 
-        console.log('File modified:', file.path);
+        debugLog('File modified:', file.path);
         this.debounceSync(file.path, 'update');
     }
 
@@ -106,7 +107,7 @@ export class SyncEngine {
         if (!(file instanceof TFile)) return;
         if (!this.shouldSyncFile(file)) return;
 
-        console.log('File deleted:', file.path);
+        debugLog('File deleted:', file.path);
 
         // Remove from incremental sync tracking
         this.removeFileTracking(file.path);
@@ -329,7 +330,7 @@ export class SyncEngine {
 
                     // Don't retry auth errors (401) or conflicts (409)
                     if (errorStatus === 401 || errorStatus === 409) {
-                        console.log(`Skipping retry for ${item.filePath} (status ${errorStatus})`);
+                        debugLog(`Skipping retry for ${item.filePath} (status ${errorStatus})`);
                         continue;
                     }
 
@@ -366,20 +367,20 @@ export class SyncEngine {
      * @returns true if file was synced, false if skipped
      */
     async syncFile(file: TFile, forceSync: boolean = false): Promise<boolean> {
-        console.log('Syncing file:', file.path);
+        debugLog('Syncing file:', file.path);
 
         // Check if file needs syncing (incremental sync optimization)
         if (!forceSync) {
             const needsSync = await this.needsSync(file);
             if (!needsSync) {
-                console.log('File unchanged, skipping sync:', file.path);
+                debugLog('File unchanged, skipping sync:', file.path);
                 return false;
             }
         }
 
         // Determine content type based on folder
         const contentType = this.detectContentType(file.path);
-        console.log(`Content type detected: ${contentType}`);
+        debugLog(`Content type detected: ${contentType}`);
 
         // Read file content
         const content = await this.app.vault.read(file);
@@ -451,11 +452,11 @@ export class SyncEngine {
         if (existingEntry) {
             // Update existing entry
             await this.apiClient.updateEntry(existingEntry.id, entryData);
-            console.log('Updated entry:', file.path);
+            debugLog('Updated entry:', file.path);
         } else {
             // Create new entry
             await this.apiClient.createEntry(entryData);
-            console.log('Created entry:', file.path);
+            debugLog('Created entry:', file.path);
         }
     }
 
@@ -488,21 +489,21 @@ export class SyncEngine {
         if (existingPerson) {
             // Update existing person
             await this.apiClient.updatePerson(existingPerson.id, personData);
-            console.log('Updated person:', file.path);
+            debugLog('Updated person:', file.path);
         } else {
             // Create new person
             try {
                 await this.apiClient.createPerson(personData);
-                console.log('Created person:', file.path);
+                debugLog('Created person:', file.path);
             } catch (error) {
                 // If we get a conflict error, person was created concurrently
                 if (error?.status === 409 || error?.message?.includes('duplicate key')) {
-                    console.log('Person already exists (created concurrently):', personName);
+                    debugLog('Person already exists (created concurrently):', personName);
                     // Fetch the existing person and update it
                     existingPerson = await this.apiClient.findPersonByName(personName);
                     if (existingPerson) {
                         await this.apiClient.updatePerson(existingPerson.id, personData);
-                        console.log('Updated person after conflict:', file.path);
+                        debugLog('Updated person after conflict:', file.path);
                     }
                 } else {
                     throw error;
@@ -521,13 +522,13 @@ export class SyncEngine {
             const person = await this.apiClient.findPersonByPath(filePath);
             if (person) {
                 await this.apiClient.deletePerson(person.id);
-                console.log('Deleted person:', filePath);
+                debugLog('Deleted person:', filePath);
             }
         } else {
             const entry = await this.apiClient.findEntryByPath(filePath);
             if (entry) {
                 await this.apiClient.deleteEntry(entry.id);
-                console.log('Deleted entry:', filePath);
+                debugLog('Deleted entry:', filePath);
             }
         }
     }
@@ -539,13 +540,13 @@ export class SyncEngine {
      * for much better performance vs individual API calls.
      */
     async syncAll(forceSync: boolean = false): Promise<void> {
-        console.log(forceSync ? 'Starting force sync (ignoring change detection)' : 'Starting incremental sync');
+        debugLog(forceSync ? 'Starting force sync (ignoring change detection)' : 'Starting incremental sync');
 
         const syncStartTime = Date.now();
         const files = this.app.vault.getMarkdownFiles();
         const filesToSync = files.filter(file => this.shouldSyncFile(file));
 
-        console.log(`Found ${filesToSync.length} files to sync`);
+        debugLog(`Found ${filesToSync.length} files to sync`);
 
         // Track errors
         const errors: string[] = [];
@@ -625,7 +626,7 @@ export class SyncEngine {
         }
 
         if (skippedCount > 0) {
-            console.log(`Skipped ${skippedCount} unchanged files`);
+            debugLog(`Skipped ${skippedCount} unchanged files`);
         }
 
         // Send in chunks of BULK_CHUNK_SIZE
@@ -635,7 +636,7 @@ export class SyncEngine {
             const chunk = entryItems.slice(i, i + BULK_CHUNK_SIZE);
             try {
                 const result = await this.apiClient.bulkSync(chunk, []);
-                console.log(`Bulk entries ${i + 1}-${i + chunk.length}: ` +
+                debugLog(`Bulk entries ${i + 1}-${i + chunk.length}: ` +
                     `${result.entries.created} created, ${result.entries.updated} updated`);
                 if (result.entries.errors.length > 0) {
                     for (const err of result.entries.errors) {
@@ -655,7 +656,7 @@ export class SyncEngine {
             const chunk = peopleItems.slice(i, i + BULK_CHUNK_SIZE);
             try {
                 const result = await this.apiClient.bulkSync([], chunk);
-                console.log(`Bulk people ${i + 1}-${i + chunk.length}: ` +
+                debugLog(`Bulk people ${i + 1}-${i + chunk.length}: ` +
                     `${result.people.created} created, ${result.people.updated} updated`);
                 if (result.people.errors.length > 0) {
                     for (const err of result.people.errors) {
@@ -681,15 +682,15 @@ export class SyncEngine {
                 errors.push(`Mirror delete: ${error.message || error}`);
             }
         } else {
-            console.log('Mirror delete disabled (enable in settings)');
+            debugLog('Mirror delete disabled (enable in settings)');
         }
 
-        console.log('Full sync completed');
+        debugLog('Full sync completed');
 
         // Update last sync time after successful sync
         if (errors.length === 0) {
             this.lastSyncTime = syncStartTime;
-            console.log('Incremental sync enabled - tracking', this.syncedFiles.size, 'files');
+            debugLog('Incremental sync enabled - tracking', this.syncedFiles.size, 'files');
         }
 
         // Throw error if any failures occurred
@@ -706,7 +707,7 @@ export class SyncEngine {
      * file_path=null and are always skipped.
      */
     private async mirrorDelete(localFiles: TFile[]): Promise<void> {
-        console.log('Starting mirror delete');
+        debugLog('Starting mirror delete');
 
         // Build set of local file paths for fast lookup
         const localPaths = new Set(localFiles.map(f => f.path));
@@ -719,7 +720,7 @@ export class SyncEngine {
                 if (!entry.file_path) continue;
 
                 if (!localPaths.has(entry.file_path)) {
-                    console.log(`Deleting entry not in vault: ${entry.file_path}`);
+                    debugLog(`Deleting entry not in vault: ${entry.file_path}`);
                     await this.apiClient.deleteEntry(entry.id);
                 }
             }
@@ -728,12 +729,12 @@ export class SyncEngine {
             const serverPeople = await this.apiClient.listPeople();
             for (const person of serverPeople) {
                 if (person.person_note_path && !localPaths.has(person.person_note_path)) {
-                    console.log(`Deleting person not in vault: ${person.person_note_path}`);
+                    debugLog(`Deleting person not in vault: ${person.person_note_path}`);
                     await this.apiClient.deletePerson(person.id);
                 }
             }
 
-            console.log('Mirror delete completed');
+            debugLog('Mirror delete completed');
         } catch (error) {
             console.error('Mirror delete failed:', error);
         }

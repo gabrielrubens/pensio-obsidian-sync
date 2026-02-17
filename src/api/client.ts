@@ -1,4 +1,5 @@
 import { requestUrl, RequestUrlParam, RequestUrlResponse } from 'obsidian';
+import { debugLog } from '../logger';
 import { TokenManager } from '../auth/tokenManager';
 import {
     ApiError,
@@ -52,6 +53,13 @@ export class ApiClient {
     }
 
     /**
+     * Clean up resources (cancel scheduled timers)
+     */
+    destroy(): void {
+        this.tokenManager.cancelRefreshTimer();
+    }
+
+    /**
      * Make authenticated API request with automatic token refresh
      */
     private async request<T>(
@@ -93,7 +101,7 @@ export class ApiClient {
         } catch (error) {
             // Handle 401 Unauthorized by attempting token refresh and retry
             if (error.status === 401 && retryCount < 1) {
-                console.log('Got 401, attempting token refresh and retry...');
+                debugLog('Got 401, attempting token refresh and retry...');
                 const newTokens = await this.tokenManager.handleUnauthorized();
 
                 if (newTokens) {

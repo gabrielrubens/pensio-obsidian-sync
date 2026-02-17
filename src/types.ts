@@ -14,6 +14,7 @@ export interface PensioSettings {
     maxEntrySizeMB: number;
     conflictResolution: 'server-wins' | 'local-wins' | 'ask';
     enableMirrorDelete: boolean; // delete server entries not found locally
+    debugMode: boolean; // enable verbose console logging
 }
 
 /**
@@ -31,7 +32,8 @@ export const DEFAULT_SETTINGS: PensioSettings = {
     excludePatterns: ['.obsidian/**', '.trash/**'],
     maxEntrySizeMB: 5,
     conflictResolution: 'server-wins',
-    enableMirrorDelete: false
+    enableMirrorDelete: false,
+    debugMode: false
 };
 
 /**

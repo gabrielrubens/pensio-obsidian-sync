@@ -1,3 +1,4 @@
+import { debugLog } from '../logger';
 /**
  * Token manager for automatic token refresh
  * 
@@ -52,7 +53,7 @@ export class TokenManager {
         const oneHour = 60 * 60 * 1000;
 
         if (tokens.expiresAt - now < oneHour) {
-            console.log('Token expiring soon, refreshing...');
+            debugLog('Token expiring soon, refreshing...');
             try {
                 const newTokens = await this.refreshToken();
                 return newTokens.accessToken;
@@ -120,7 +121,7 @@ export class TokenManager {
             await this.storage.storeTokens(newTokens);
             this.scheduleRefresh(expiresAt);
 
-            console.log('Token refreshed successfully');
+            debugLog('Token refreshed successfully');
             return newTokens;
         } catch (error) {
             console.error('Token refresh failed:', error);
@@ -139,7 +140,7 @@ export class TokenManager {
      * Handle 401 Unauthorized response by attempting to refresh
      */
     async handleUnauthorized(): Promise<TokenData | null> {
-        console.log('Handling 401 Unauthorized, attempting token refresh...');
+        debugLog('Handling 401 Unauthorized, attempting token refresh...');
         try {
             return await this.refreshToken();
         } catch (error) {
@@ -166,10 +167,10 @@ export class TokenManager {
         const delay = refreshAt - now;
 
         if (delay > 0) {
-            console.log(`Scheduling token refresh in ${Math.round(delay / 1000 / 60)} minutes`);
+            debugLog(`Scheduling token refresh in ${Math.round(delay / 1000 / 60)} minutes`);
             this.refreshTimer = setTimeout(async () => {
                 try {
-                    console.log('Auto-refreshing token...');
+                    debugLog('Auto-refreshing token...');
                     await this.refreshToken();
                     new Notice('Authentication refreshed automatically', 3000);
                 } catch (error) {
@@ -179,10 +180,20 @@ export class TokenManager {
             }, delay);
         } else {
             // Token already expired or will expire very soon, refresh immediately
-            console.log('Token expired or expiring very soon, refreshing immediately');
+            debugLog('Token expired or expiring very soon, refreshing immediately');
             this.refreshToken().catch(error => {
                 console.error('Immediate refresh failed:', error);
             });
+        }
+    }
+
+    /**
+     * Cancel scheduled refresh timer (for plugin unload)
+     */
+    cancelRefreshTimer(): void {
+        if (this.refreshTimer) {
+            clearTimeout(this.refreshTimer);
+            this.refreshTimer = null;
         }
     }
 

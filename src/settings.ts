@@ -51,10 +51,8 @@ export class PensioSettingTab extends PluginSettingTab {
 
         containerEl.empty();
 
-        containerEl.createEl('h2', { text: 'Pensio Sync Settings' });
-
-        // Connection settings
-        containerEl.createEl('h3', { text: 'Connection' });
+        // Connection
+        new Setting(containerEl).setName('Connection').setHeading();
 
         new Setting(containerEl)
             .setName('API URL')
@@ -197,8 +195,8 @@ export class PensioSettingTab extends PluginSettingTab {
                     });
             });
 
-        // Sync settings
-        containerEl.createEl('h3', { text: 'Sync Options' });
+        // Sync options
+        new Setting(containerEl).setName('Sync options').setHeading();
 
         new Setting(containerEl)
             .setName('Auto-sync')
@@ -233,8 +231,8 @@ export class PensioSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        // Folder pickers
-        containerEl.createEl('h3', { text: 'Sync Folders' });
+        // Sync folders
+        new Setting(containerEl).setName('Sync folders').setHeading();
 
         new Setting(containerEl)
             .setName('Journal folder')
@@ -307,8 +305,18 @@ export class PensioSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        // Advanced settings
-        containerEl.createEl('h3', { text: 'Advanced' });
+        // Advanced
+        new Setting(containerEl).setName('Advanced').setHeading();
+
+        new Setting(containerEl)
+            .setName('Debug mode')
+            .setDesc('Enable verbose console logging for troubleshooting')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.debugMode)
+                .onChange(async (value) => {
+                    this.plugin.settings.debugMode = value;
+                    await this.plugin.saveSettings();
+                }));
 
         new Setting(containerEl)
             .setName('Max entry size (MB)')
