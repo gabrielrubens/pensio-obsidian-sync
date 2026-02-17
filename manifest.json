@@ -1,7 +1,7 @@
 {
     "id": "pensio-sync",
     "name": "Pensio Sync",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "minAppVersion": "1.4.0",
     "description": "Sync your Obsidian vault with Pensio for emotional insights and AI-powered reflections",
     "author": "Pensio",
