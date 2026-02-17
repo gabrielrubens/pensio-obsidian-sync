@@ -236,14 +236,15 @@ export class PensioSettingTab extends PluginSettingTab {
         // Test connection
         new Setting(containerEl)
             .setName('Test connection')
-            .setDesc(hasBothTokens
-                ? 'Verify your credentials work'
-                : 'Paste both tokens above first')
+            .setDesc('Verify your credentials work')
             .addButton(button => {
                 button
                     .setButtonText('Test')
-                    .setDisabled(!hasBothTokens)
                     .onClick(async () => {
+                        if (!this.plugin.settings.apiToken || !this.plugin.settings.refreshToken) {
+                            new Notice('Please paste both tokens above first');
+                            return;
+                        }
                         try {
                             button.setDisabled(true);
                             button.setButtonText('Testing...');
