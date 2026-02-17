@@ -13,7 +13,6 @@ export interface JournalFolderMapping {
  */
 export const ENTRY_TYPES: { value: string; label: string }[] = [
     { value: 'daily_journal', label: 'Daily Journal' },
-    { value: 'free_write', label: 'Free Write' },
     { value: 'prompted_journal', label: 'Prompted Journal' },
     { value: 'deep_dive', label: 'Deep Dive' },
     { value: 'meeting_note', label: 'Meeting Note' },

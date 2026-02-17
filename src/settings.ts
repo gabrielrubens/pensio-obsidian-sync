@@ -1,6 +1,6 @@
 import { App, FuzzySuggestModal, Notice, PluginSettingTab, Setting, TFolder } from 'obsidian';
 import PensioPlugin from './main';
-import { ENTRY_TYPES, JournalFolderMapping } from './types';
+import { ENTRY_TYPES } from './types';
 
 /**
  * Folder suggest modal for selecting folders

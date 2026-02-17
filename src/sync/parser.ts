@@ -36,9 +36,6 @@ const ENTRY_TYPE_MAP: Record<string, string> = {
     'daily_journal': 'daily_journal',
     'daily': 'daily_journal',
     'journal': 'daily_journal',
-    'free_write': 'free_write',
-    'freewrite': 'free_write',
-    'free': 'free_write',
     'prompted_journal': 'prompted_journal',
     'prompted': 'prompted_journal',
     'prompt': 'prompted_journal',
@@ -47,9 +44,13 @@ const ENTRY_TYPE_MAP: Record<string, string> = {
     'deepdive': 'deep_dive',
     'meeting_note': 'meeting_note',
     'meeting': 'meeting_note',
-    'person_note': 'person_note',
-    'relationship_note': 'person_note',
     'other': 'other',
+    // Legacy aliases — remap to canonical types
+    'free_write': 'daily_journal',
+    'freewrite': 'daily_journal',
+    'free': 'daily_journal',
+    'person_note': 'other',
+    'relationship_note': 'other',
 };
 
 /**
