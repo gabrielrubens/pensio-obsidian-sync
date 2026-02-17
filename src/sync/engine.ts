@@ -87,6 +87,10 @@ export class SyncEngine {
         // Wait for vault to finish indexing before initial sync
         setTimeout(async () => {
             if (!this.isWatching) return; // Stopped before timer fired
+            if (this.apiClient.isAuthInvalidated()) {
+                debugLog('Initial sync skipped — auth invalidated');
+                return;
+            }
             debugLog('Running initial sync...');
             try {
                 await this.syncAll(false);
@@ -103,6 +107,10 @@ export class SyncEngine {
         this.syncIntervalTimer = setInterval(async () => {
             if (this.isSyncing) {
                 debugLog('Periodic sync skipped — sync already in progress');
+                return;
+            }
+            if (this.apiClient.isAuthInvalidated()) {
+                debugLog('Periodic sync skipped — auth invalidated');
                 return;
             }
             debugLog('Running periodic sync...');
@@ -268,18 +276,21 @@ export class SyncEngine {
         // Must be markdown
         if (!file.path.endsWith('.md')) return false;
 
-        // Check if in any of the sync folders
-        const syncFolders = [
-            this.settings.journalFolder,
-            this.settings.peopleFolder
-        ].filter(folder => folder.trim().length > 0);
-
-        const inSyncFolder = syncFolders.some(folder =>
-            file.path.startsWith(folder + '/') || file.path === folder
+        // Check journal folders
+        const inJournalFolder = this.settings.journalFolders.some(mapping =>
+            mapping.folder.trim().length > 0 &&
+            (file.path.startsWith(mapping.folder + '/') || file.path === mapping.folder)
         );
-        if (!inSyncFolder) return false;
+        if (inJournalFolder) return true;
 
-        return true;
+        // Check people folder
+        if (this.settings.peopleFolder.trim().length > 0) {
+            if (file.path.startsWith(this.settings.peopleFolder + '/') || file.path === this.settings.peopleFolder) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -351,6 +362,13 @@ export class SyncEngine {
      */
     private async processQueue(): Promise<void> {
         if (this.isSyncing || this.syncQueue.length === 0) return;
+
+        // Don't process queue if auth is dead
+        if (this.apiClient.isAuthInvalidated()) {
+            debugLog('Queue processing skipped — auth invalidated');
+            this.syncQueue = [];
+            return;
+        }
 
         this.isSyncing = true;
 
@@ -437,7 +455,7 @@ export class SyncEngine {
         if (contentType === 'person') {
             await this.syncPerson(file, parsed);
         } else {
-            await this.syncEntry(file, parsed);
+            await this.syncEntry(file, parsed, contentType);
         }
 
         // Update file tracking after successful sync
@@ -446,32 +464,43 @@ export class SyncEngine {
     }
 
     /**
-     * Detect content type based on file path
+     * Detect content type based on file path.
+     * Returns 'person' for people folder, or the matched entry type string
+     * from journalFolders (e.g. 'daily_journal', 'deep_dive').
      */
-    private detectContentType(filePath: string): 'entry' | 'person' {
+    private detectContentType(filePath: string): string {
         // Check if in people folder
         if (this.settings.peopleFolder && filePath.startsWith(this.settings.peopleFolder + '/')) {
             return 'person';
         }
-        // Check if exact match (for top-level files)
         if (this.settings.peopleFolder && filePath === this.settings.peopleFolder) {
             return 'person';
         }
-        // Default to entry (journal)
-        return 'entry';
+
+        // Check journal folder mappings — return the matched entry type
+        for (const mapping of this.settings.journalFolders) {
+            if (mapping.folder.trim().length > 0 &&
+                (filePath.startsWith(mapping.folder + '/') || filePath === mapping.folder)) {
+                return mapping.entryType;
+            }
+        }
+
+        // Fallback
+        return 'daily_journal';
     }
 
     /**
      * Sync journal entry
+     * @param folderEntryType entry type from folder mapping (e.g. 'daily_journal')
      */
-    private async syncEntry(file: TFile, parsed: any): Promise<void> {
+    private async syncEntry(file: TFile, parsed: any, folderEntryType: string): Promise<void> {
         // Resolve entry date: frontmatter → filename → file creation time
         const entryDate = parsed.date
             || extractDateFromFilename(file.name)
             || new Date(file.stat.ctime).toISOString().slice(0, 10);
 
-        // Resolve entry type: frontmatter → default
-        const entryType = parsed.entryType || 'daily_journal';
+        // Resolve entry type: frontmatter overrides folder mapping
+        const entryType = parsed.entryType || folderEntryType;
 
         // Plugin sends RAW markdown, backend processes everything
         const entryData: CreateEntryRequest = {
@@ -579,6 +608,11 @@ export class SyncEngine {
      * for much better performance vs individual API calls.
      */
     async syncAll(forceSync: boolean = false): Promise<void> {
+        // Abort immediately if auth is dead — no point making API calls
+        if (this.apiClient.isAuthInvalidated()) {
+            throw new Error('Authentication expired. Please log in again in Pensio settings.');
+        }
+
         debugLog(forceSync ? 'Starting force sync (ignoring change detection)' : 'Starting incremental sync');
 
         const syncStartTime = Date.now();
@@ -638,7 +672,8 @@ export class SyncEngine {
                     const entryDate = parsed.date
                         || extractDateFromFilename(file.name)
                         || new Date(file.stat.ctime).toISOString().slice(0, 10);
-                    const entryType = parsed.entryType || 'daily_journal';
+                    // Frontmatter overrides folder mapping
+                    const entryType = parsed.entryType || contentType;
 
                     entryItems.push({
                         action: 'create',  // bulk endpoint upserts on create

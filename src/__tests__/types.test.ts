@@ -8,8 +8,11 @@ describe('PensioSettings', () => {
         expect(DEFAULT_SETTINGS.autoSync).toBe(true);
     });
 
-    it('should have individual folder settings', () => {
-        expect(DEFAULT_SETTINGS.journalFolder).toBe('Journal');
+    it('should have journal folders with default mapping', () => {
+        expect(DEFAULT_SETTINGS.journalFolders).toHaveLength(1);
+        expect(DEFAULT_SETTINGS.journalFolders[0].folder).toBe('Journal');
+        expect(DEFAULT_SETTINGS.journalFolders[0].entryType).toBe('daily_journal');
+        expect(DEFAULT_SETTINGS.journalFolder).toBe('');  // deprecated
         expect(DEFAULT_SETTINGS.peopleFolder).toBe('People');
     });
 

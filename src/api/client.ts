@@ -60,7 +60,8 @@ export class ApiClient {
     }
 
     /**
-     * Make authenticated API request with automatic token refresh
+     * Make authenticated API request with automatic token refresh.
+     * Short-circuits if auth has been invalidated (avoids 401 spam).
      */
     private async request<T>(
         method: string,
@@ -68,6 +69,13 @@ export class ApiClient {
         body?: any,
         retryCount = 0
     ): Promise<T> {
+        // Fast-fail if auth is dead (prevents cascading 401 + Notice spam)
+        if (this.tokenManager.isAuthInvalidated()) {
+            const err: any = new Error('Authentication expired');
+            err.status = 401;
+            throw err;
+        }
+
         const url = `${this.settings.apiUrl}${endpoint}`;
 
         const options: RequestUrlParam = {
@@ -462,5 +470,13 @@ export class ApiClient {
      */
     async isAuthenticated(): Promise<boolean> {
         return this.tokenManager.hasTokens() && !(await this.tokenManager.isTokenExpired());
+    }
+
+    /**
+     * Check if authentication has been invalidated (refresh token rejected).
+     * When true, all sync/API operations should be skipped.
+     */
+    isAuthInvalidated(): boolean {
+        return this.tokenManager.isAuthInvalidated();
     }
 }

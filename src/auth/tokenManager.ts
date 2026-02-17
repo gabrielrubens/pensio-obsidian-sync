@@ -16,6 +16,12 @@ export class TokenManager {
     private apiUrl: string;
     private refreshPromise: Promise<TokenData> | null = null;
     private refreshTimer: NodeJS.Timeout | null = null;
+    /**
+     * True when token refresh has failed with 401 (refresh token invalid).
+     * Prevents repeated refresh attempts and Notice spam until the user
+     * explicitly re-authenticates.
+     */
+    private authInvalidated = false;
 
     constructor(apiUrl: string) {
         this.storage = new TokenStorage();
@@ -35,14 +41,22 @@ export class TokenManager {
             expiresAt
         };
 
+        // Reset invalidation flag on fresh login
+        this.authInvalidated = false;
+
         await this.storage.storeTokens(tokens);
         this.scheduleRefresh(expiresAt);
     }
 
     /**
-     * Get current access token, refreshing if necessary
+     * Get current access token, refreshing if necessary.
+     * Returns null (skips refresh) if auth was previously invalidated.
      */
     async getAccessToken(): Promise<string | null> {
+        if (this.authInvalidated) {
+            return null;
+        }
+
         const tokens = await this.storage.retrieveTokens();
         if (!tokens) {
             return null;
@@ -91,6 +105,11 @@ export class TokenManager {
      * Actually perform the token refresh API call
      */
     private async _performRefresh(): Promise<TokenData> {
+        // If auth was already invalidated, don't attempt refresh
+        if (this.authInvalidated) {
+            throw new Error('Authentication was invalidated — please log in again');
+        }
+
         const tokens = await this.storage.retrieveTokens();
         if (!tokens || !tokens.refreshToken) {
             throw new Error('No refresh token available');
@@ -126,10 +145,11 @@ export class TokenManager {
         } catch (error) {
             console.error('Token refresh failed:', error);
 
-            // If refresh fails with 401, clear tokens (refresh token is invalid)
+            // If refresh fails with 401, invalidate auth (refresh token is dead)
             if (error.status === 401) {
+                this.authInvalidated = true;
                 await this.clearTokens();
-                new Notice('Authentication expired. Please log in again.');
+                new Notice('Session expired. Please log in again in Pensio settings.');
             }
 
             throw new Error('Failed to refresh authentication token');
@@ -137,16 +157,27 @@ export class TokenManager {
     }
 
     /**
-     * Handle 401 Unauthorized response by attempting to refresh
+     * Handle 401 Unauthorized response by attempting to refresh.
+     * Returns null silently if auth was already invalidated (Notice was
+     * already shown once by _performRefresh).
      */
     async handleUnauthorized(): Promise<TokenData | null> {
+        if (this.authInvalidated) {
+            debugLog('Auth already invalidated, skipping refresh attempt');
+            return null;
+        }
+
         debugLog('Handling 401 Unauthorized, attempting token refresh...');
         try {
             return await this.refreshToken();
         } catch (error) {
             console.error('Token refresh on 401 failed:', error);
-            await this.clearTokens();
-            new Notice('Session expired. Please log in again.');
+            // Don't show another Notice — _performRefresh already showed one
+            // if the refresh token was invalid (401). Just ensure cleanup.
+            if (!this.authInvalidated) {
+                this.authInvalidated = true;
+                await this.clearTokens();
+            }
             return null;
         }
     }
@@ -235,6 +266,14 @@ export class TokenManager {
             return true;
         }
         return tokens.expiresAt < Date.now();
+    }
+
+    /**
+     * Whether authentication has been invalidated (refresh token rejected).
+     * When true, all API calls should be skipped until the user logs in again.
+     */
+    isAuthInvalidated(): boolean {
+        return this.authInvalidated;
     }
 
     /**

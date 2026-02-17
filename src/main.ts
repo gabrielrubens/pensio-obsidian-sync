@@ -48,6 +48,15 @@ export default class PensioPlugin extends Plugin {
 
     async loadSettings() {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+
+        // Migrate legacy journalFolder → journalFolders (pre-v0.1.4)
+        if (this.settings.journalFolder && (!this.settings.journalFolders || this.settings.journalFolders.length === 0)) {
+            this.settings.journalFolders = [
+                { folder: this.settings.journalFolder, entryType: 'daily_journal', label: 'Daily Journal' },
+            ];
+            this.settings.journalFolder = '';
+            await this.saveData(this.settings);
+        }
     }
 
     async saveSettings() {

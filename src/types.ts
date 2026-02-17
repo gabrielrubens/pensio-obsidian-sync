@@ -1,4 +1,25 @@
 /**
+ * Maps a vault folder to a Pensio entry type.
+ * Each mapping tells the sync engine: "files in this folder are this type."
+ */
+export interface JournalFolderMapping {
+    folder: string;
+    entryType: string;  // matches JournalEntry.EntryType on backend
+    label: string;      // human-readable label shown in settings
+}
+
+/**
+ * Available entry types (mirrors backend JournalEntry.EntryType)
+ */
+export const ENTRY_TYPES: { value: string; label: string }[] = [
+    { value: 'daily_journal', label: 'Daily Journal' },
+    { value: 'prompted_journal', label: 'Prompted Journal' },
+    { value: 'deep_dive', label: 'Deep Dive' },
+    { value: 'meeting_note', label: 'Meeting Note' },
+    { value: 'other', label: 'Other' },
+];
+
+/**
  * Plugin settings interface
  */
 export interface PensioSettings {
@@ -7,7 +28,8 @@ export interface PensioSettings {
     refreshToken: string; // Store refresh token for auto-renewal
     deviceId: string;
     autoSync: boolean;
-    journalFolder: string; // folder for journal entries
+    journalFolder: string; // DEPRECATED — kept for migration from pre-v0.1.4
+    journalFolders: JournalFolderMapping[]; // folder-to-type mappings
     peopleFolder: string; // folder for people notes
     enableMirrorDelete: boolean; // delete server entries not found locally
     debugMode: boolean; // enable verbose console logging
@@ -22,7 +44,10 @@ export const DEFAULT_SETTINGS: PensioSettings = {
     refreshToken: '',
     deviceId: '',
     autoSync: true,
-    journalFolder: 'Journal',
+    journalFolder: '',  // DEPRECATED
+    journalFolders: [
+        { folder: 'Journal', entryType: 'daily_journal', label: 'Daily Journal' },
+    ],
     peopleFolder: 'People',
     enableMirrorDelete: false,
     debugMode: false

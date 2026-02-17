@@ -1,5 +1,6 @@
 import { App, FuzzySuggestModal, Notice, PluginSettingTab, Setting, TFolder } from 'obsidian';
 import PensioPlugin from './main';
+import { ENTRY_TYPES, JournalFolderMapping } from './types';
 
 /**
  * Folder suggest modal for selecting folders
@@ -59,29 +60,30 @@ export class PensioSettingTab extends PluginSettingTab {
         // --- Sync folders ---
         new Setting(containerEl).setName('Sync folders').setHeading();
 
+        // Journal folders (multi-folder with entry type mapping)
+        const journalDesc = containerEl.createEl('p', {
+            cls: 'setting-item-description',
+            text: 'Map vault folders to Pensio entry types. Each .md file in a folder becomes a journal entry of the mapped type. Frontmatter "type:" overrides the folder mapping.',
+        });
+        journalDesc.style.marginBottom = '8px';
+
+        // Render each existing mapping
+        for (let i = 0; i < this.plugin.settings.journalFolders.length; i++) {
+            this.renderFolderMapping(containerEl, i);
+        }
+
+        // Add folder button
         new Setting(containerEl)
-            .setName('Journal folder')
-            .setDesc(
-                'Each .md file in this folder becomes a journal entry in Pensio. ' +
-                'Use frontmatter to control entry type (type: deep_dive) and date (date: 2025-01-15).'
-            )
-            .addText(text => {
-                text
-                    .setPlaceholder('Journal')
-                    .setValue(this.plugin.settings.journalFolder)
-                    .onChange(async (value) => {
-                        this.plugin.settings.journalFolder = value.trim();
-                        await this.plugin.saveSettings();
-                    });
-            })
             .addButton(button => button
-                .setButtonText('Browse')
-                .onClick(() => {
-                    new FolderSuggestModal(this.app, async (folder) => {
-                        this.plugin.settings.journalFolder = folder.path;
-                        await this.plugin.saveSettings();
-                        this.display();
-                    }).open();
+                .setButtonText('+ Add journal folder')
+                .onClick(async () => {
+                    this.plugin.settings.journalFolders.push({
+                        folder: '',
+                        entryType: 'daily_journal',
+                        label: 'Daily Journal',
+                    });
+                    await this.plugin.saveSettings();
+                    this.display();
                 }));
 
         new Setting(containerEl)
@@ -155,6 +157,59 @@ export class PensioSettingTab extends PluginSettingTab {
                     this.plugin.settings.debugMode = value;
                     await this.plugin.saveSettings();
                 }));
+    }
+
+    /**
+     * Render a single journal folder mapping row.
+     * Shows: [folder text + browse] [entry type dropdown] [remove button]
+     */
+    private renderFolderMapping(containerEl: HTMLElement, index: number): void {
+        const mapping = this.plugin.settings.journalFolders[index];
+
+        const setting = new Setting(containerEl)
+            .setName(`Folder ${index + 1}`)
+            .addText(text => {
+                text
+                    .setPlaceholder('Folder path')
+                    .setValue(mapping.folder)
+                    .onChange(async (value) => {
+                        this.plugin.settings.journalFolders[index].folder = value.trim();
+                        await this.plugin.saveSettings();
+                    });
+            })
+            .addButton(button => button
+                .setButtonText('Browse')
+                .onClick(() => {
+                    new FolderSuggestModal(this.app, async (folder) => {
+                        this.plugin.settings.journalFolders[index].folder = folder.path;
+                        await this.plugin.saveSettings();
+                        this.display();
+                    }).open();
+                }))
+            .addDropdown(dropdown => {
+                for (const type of ENTRY_TYPES) {
+                    dropdown.addOption(type.value, type.label);
+                }
+                dropdown.setValue(mapping.entryType);
+                dropdown.onChange(async (value) => {
+                    this.plugin.settings.journalFolders[index].entryType = value;
+                    const matched = ENTRY_TYPES.find(t => t.value === value);
+                    this.plugin.settings.journalFolders[index].label = matched?.label || value;
+                    await this.plugin.saveSettings();
+                });
+            });
+
+        // Only show remove button if there's more than one folder
+        if (this.plugin.settings.journalFolders.length > 1) {
+            setting.addButton(button => button
+                .setButtonText('Remove')
+                .setWarning()
+                .onClick(async () => {
+                    this.plugin.settings.journalFolders.splice(index, 1);
+                    await this.plugin.saveSettings();
+                    this.display();
+                }));
+        }
     }
 
     /**
