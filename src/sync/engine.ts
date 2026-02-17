@@ -1,6 +1,6 @@
-import { debugLog } from '../logger';
 import { App, TAbstractFile, TFile } from 'obsidian';
 import { ApiClient } from '../api/client';
+import { debugLog } from '../logger';
 import { BulkSyncItem, CreateEntryRequest, CreatePersonRequest, PensioSettings, SyncQueueItem } from '../types';
 import { extractDateFromFilename, parseMarkdown } from './parser';
 

@@ -1,6 +1,6 @@
 import { requestUrl, RequestUrlParam, RequestUrlResponse } from 'obsidian';
-import { debugLog } from '../logger';
 import { TokenManager } from '../auth/tokenManager';
+import { debugLog } from '../logger';
 import {
     ApiError,
     BulkSyncItem,

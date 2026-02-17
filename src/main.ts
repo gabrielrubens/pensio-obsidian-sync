@@ -1,6 +1,6 @@
 import { Notice, Plugin } from 'obsidian';
 import { ApiClient } from './api/client';
-import { debugLog, setDebugMode } from './logger';
+import { setDebugMode } from './logger';
 import { PensioSettingTab } from './settings';
 import { SyncEngine } from './sync/engine';
 import { DEFAULT_SETTINGS, PensioSettings } from './types';
