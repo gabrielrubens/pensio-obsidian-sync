@@ -58,18 +58,33 @@ export class PensioSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('API URL')
-            .setDesc('Your Pensio server URL (e.g., https://journal.example.com)')
+            .setDesc('Your Pensio server URL (e.g., https://pensio.app or https://journal.example.com)')
             .addText(text => text
-                .setPlaceholder('https://journal.example.com')
+                .setPlaceholder('https://pensio.app')
                 .setValue(this.plugin.settings.apiUrl)
                 .onChange(async (value) => {
                     this.plugin.settings.apiUrl = value.trim();
                     await this.plugin.saveSettings();
                 }));
 
+        // "Open Token Page" button — opens the web app token management page
+        const apiUrl = this.plugin.settings.apiUrl;
+        if (apiUrl) {
+            new Setting(containerEl)
+                .setName('Get your tokens')
+                .setDesc('Open your Pensio settings page to generate API tokens, then paste them below.')
+                .addButton(button => button
+                    .setButtonText('Open Token Page')
+                    .setCta()
+                    .onClick(() => {
+                        const tokenUrl = `${apiUrl.replace(/\/+$/, '')}/settings/#tokens`;
+                        window.open(tokenUrl);
+                    }));
+        }
+
         new Setting(containerEl)
             .setName('Access Token')
-            .setDesc('Your access token (24-hour validity). Get both tokens from: curl -X POST http://localhost:8000/api/v1/auth/token/ with your email/password')
+            .setDesc('Paste the access token from your Pensio settings page (valid 24 hours, auto-refreshes)')
             .addText(text => {
                 text
                     .setPlaceholder('Enter your access token')
@@ -87,7 +102,7 @@ export class PensioSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('Refresh Token')
-            .setDesc('Your refresh token (90-day validity). REQUIRED: You must provide BOTH tokens for authentication to work.')
+            .setDesc('Paste the refresh token (valid 90 days). Both tokens are required for sync to work.')
             .addText(text => {
                 text
                     .setPlaceholder('Enter your refresh token')
@@ -204,6 +219,17 @@ export class PensioSettingTab extends PluginSettingTab {
                 .setDynamicTooltip()
                 .onChange(async (value) => {
                     this.plugin.settings.syncInterval = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Mirror delete')
+            .setDesc('Delete server entries that no longer exist in your vault. ' +
+                'Web-GUI entries (no file path) are never affected. Use with caution.')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableMirrorDelete)
+                .onChange(async (value) => {
+                    this.plugin.settings.enableMirrorDelete = value;
                     await this.plugin.saveSettings();
                 }));
 

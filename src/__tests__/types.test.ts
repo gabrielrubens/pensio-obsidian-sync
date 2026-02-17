@@ -34,6 +34,10 @@ describe('PensioSettings', () => {
     it('should have max entry size', () => {
         expect(DEFAULT_SETTINGS.maxEntrySizeMB).toBe(5);
     });
+
+    it('should have mirror delete disabled by default', () => {
+        expect(DEFAULT_SETTINGS.enableMirrorDelete).toBe(false);
+    });
 });
 
 describe('API Request Types', () => {

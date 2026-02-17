@@ -13,6 +13,7 @@ export interface PensioSettings {
     excludePatterns: string[]; // glob patterns to exclude
     maxEntrySizeMB: number;
     conflictResolution: 'server-wins' | 'local-wins' | 'ask';
+    enableMirrorDelete: boolean; // delete server entries not found locally
 }
 
 /**
@@ -29,7 +30,8 @@ export const DEFAULT_SETTINGS: PensioSettings = {
     peopleFolder: 'People',
     excludePatterns: ['.obsidian/**', '.trash/**'],
     maxEntrySizeMB: 5,
-    conflictResolution: 'server-wins'
+    conflictResolution: 'server-wins',
+    enableMirrorDelete: false
 };
 
 /**
@@ -58,7 +60,7 @@ export interface EntryResponse {
     entry_date: string | null;
     entry_type: string;
     source: string;
-    file_path: string;
+    file_path: string | null;
     file_hash: string;
     frontmatter: Record<string, any>;
     primary_emotion: string;
@@ -91,7 +93,7 @@ export interface CreateEntryRequest {
     content_plain: string;
     entry_date: string | null;
     entry_type: string;
-    file_path: string;
+    file_path: string;  // Always set for plugin-synced entries
     frontmatter: Record<string, any>;
     file_modified_at: string;
 }
@@ -110,6 +112,34 @@ export interface CreatePersonRequest {
 
 export interface UpdateEntryRequest extends CreateEntryRequest {
     // Same as create, file_hash is read-only
+}
+
+/**
+ * Bulk sync request item
+ */
+export interface BulkSyncItem {
+    action: 'create' | 'update' | 'delete';
+    file_path: string;
+    data?: CreateEntryRequest | CreatePersonRequest;
+}
+
+/**
+ * Bulk sync response
+ */
+export interface BulkSyncResponse {
+    entries: {
+        created: number;
+        updated: number;
+        deleted: number;
+        errors: Array<{ file_path: string; error: string }>;
+    };
+    people: {
+        created: number;
+        updated: number;
+        deleted: number;
+        errors: Array<{ file_path: string; error: string }>;
+    };
+    total_time_ms: number;
 }
 
 /**

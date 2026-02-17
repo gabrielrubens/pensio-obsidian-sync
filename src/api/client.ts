@@ -2,6 +2,8 @@ import { requestUrl, RequestUrlParam, RequestUrlResponse } from 'obsidian';
 import { TokenManager } from '../auth/tokenManager';
 import {
     ApiError,
+    BulkSyncItem,
+    BulkSyncResponse,
     CreateEntryRequest,
     CreatePersonRequest,
     EntryResponse,
@@ -276,6 +278,32 @@ export class ApiClient {
             this.cache.setEntry(entry);
         }
         return entry;
+    }
+
+    // ========================================================================
+    // Bulk Sync API Methods
+    // ========================================================================
+
+    /**
+     * Bulk sync entries and people in a single request.
+     * Much more efficient than individual create/update/delete calls.
+     *
+     * @param entries - Array of entry sync items
+     * @param people - Array of people sync items
+     */
+    async bulkSync(
+        entries: BulkSyncItem[] = [],
+        people: BulkSyncItem[] = []
+    ): Promise<BulkSyncResponse> {
+        const response = await this.request<BulkSyncResponse>(
+            'POST',
+            '/api/v1/sync/bulk/',
+            { entries, people }
+        );
+        // Invalidate caches since bulk operations may change many things
+        this.cache.invalidateEntry();
+        this.cache.invalidatePerson();
+        return response;
     }
 
     // ========================================================================

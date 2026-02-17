@@ -1,7 +1,7 @@
 import { App, TAbstractFile, TFile } from 'obsidian';
 import { ApiClient } from '../api/client';
-import { CreateEntryRequest, CreatePersonRequest, PensioSettings, SyncQueueItem } from '../types';
-import { parseMarkdown } from './parser';
+import { BulkSyncItem, CreateEntryRequest, CreatePersonRequest, PensioSettings, SyncQueueItem } from '../types';
+import { extractDateFromFilename, parseMarkdown } from './parser';
 
 /**
  * Sync engine handles file watching and syncing with the API
@@ -425,13 +425,21 @@ export class SyncEngine {
      * Sync journal entry
      */
     private async syncEntry(file: TFile, parsed: any): Promise<void> {
+        // Resolve entry date: frontmatter → filename → file creation time
+        const entryDate = parsed.date
+            || extractDateFromFilename(file.name)
+            || new Date(file.stat.ctime).toISOString().slice(0, 10);
+
+        // Resolve entry type: frontmatter → default
+        const entryType = parsed.entryType || 'daily_journal';
+
         // Plugin sends RAW markdown, backend processes everything
         const entryData: CreateEntryRequest = {
             title: parsed.title || file.basename,
             content_html: parsed.content,  // Raw markdown - backend will render
             content_plain: parsed.content,  // Raw markdown - backend extracts
-            entry_date: null,  // Backend extracts from frontmatter or filename
-            entry_type: 'daily_journal',  // Backend determines from path/frontmatter
+            entry_date: entryDate,          // Extracted: frontmatter → filename → ctime
+            entry_type: entryType,          // Extracted: frontmatter → default
             file_path: file.path,
             frontmatter: {},  // Backend parses frontmatter
             file_modified_at: new Date(file.stat.mtime).toISOString()
@@ -525,7 +533,10 @@ export class SyncEngine {
     }
 
     /**
-     * Sync all files in configured folders
+     * Sync all files in configured folders using bulk sync API.
+     *
+     * Batches files into chunks and sends them via the bulk endpoint
+     * for much better performance vs individual API calls.
      */
     async syncAll(forceSync: boolean = false): Promise<void> {
         console.log(forceSync ? 'Starting force sync (ignoring change detection)' : 'Starting incremental sync');
@@ -539,16 +550,76 @@ export class SyncEngine {
         // Track errors
         const errors: string[] = [];
 
-        // Sync all local files to server
+        // Separate files into entries and people, read+parse, skip unchanged
+        const entryItems: BulkSyncItem[] = [];
+        const peopleItems: BulkSyncItem[] = [];
         let skippedCount = 0;
+
         for (const file of filesToSync) {
             try {
-                const synced = await this.syncFile(file, forceSync);
-                if (!synced) {
-                    skippedCount++;
+                // Skip unchanged files unless force-syncing
+                if (!forceSync) {
+                    const needsSync = await this.needsSync(file);
+                    if (!needsSync) {
+                        skippedCount++;
+                        continue;
+                    }
                 }
+
+                const content = await this.app.vault.read(file);
+                const parsed = parseMarkdown(content);
+                const contentType = this.detectContentType(file.path);
+
+                // Check file size
+                const sizeMB = new Blob([content]).size / (1024 * 1024);
+                if (sizeMB > this.settings.maxEntrySizeMB) {
+                    errors.push(`${file.path}: File too large (${sizeMB.toFixed(2)}MB)`);
+                    continue;
+                }
+
+                if (contentType === 'person') {
+                    const personName = parsed.title || file.basename;
+                    peopleItems.push({
+                        action: 'create',  // bulk endpoint upserts on create
+                        file_path: file.path,
+                        data: {
+                            name: personName,
+                            aliases: [],
+                            person_note_path: file.path,
+                            relationship: '',
+                            birthday: null,
+                            tags: [],
+                            from_locations: [],
+                            lived_in: [],
+                            metadata: { raw_content: parsed.content },
+                        },
+                    });
+                } else {
+                    const entryDate = parsed.date
+                        || extractDateFromFilename(file.name)
+                        || new Date(file.stat.ctime).toISOString().slice(0, 10);
+                    const entryType = parsed.entryType || 'daily_journal';
+
+                    entryItems.push({
+                        action: 'create',  // bulk endpoint upserts on create
+                        file_path: file.path,
+                        data: {
+                            title: parsed.title || file.basename,
+                            content_html: parsed.content,
+                            content_plain: parsed.content,
+                            entry_date: entryDate,
+                            entry_type: entryType,
+                            file_path: file.path,
+                            frontmatter: {},
+                            file_modified_at: new Date(file.stat.mtime).toISOString(),
+                        },
+                    });
+                }
+
+                // Update tracking after preparing (will be confirmed after API call)
+                this.updateFileTracking(file);
             } catch (error) {
-                console.error(`Failed to sync ${file.path}:`, error);
+                console.error(`Failed to prepare ${file.path}:`, error);
                 errors.push(`${file.path}: ${error.message || error}`);
             }
         }
@@ -557,12 +628,60 @@ export class SyncEngine {
             console.log(`Skipped ${skippedCount} unchanged files`);
         }
 
+        // Send in chunks of BULK_CHUNK_SIZE
+        const BULK_CHUNK_SIZE = 50;
+
+        for (let i = 0; i < entryItems.length; i += BULK_CHUNK_SIZE) {
+            const chunk = entryItems.slice(i, i + BULK_CHUNK_SIZE);
+            try {
+                const result = await this.apiClient.bulkSync(chunk, []);
+                console.log(`Bulk entries ${i + 1}-${i + chunk.length}: ` +
+                    `${result.entries.created} created, ${result.entries.updated} updated`);
+                if (result.entries.errors.length > 0) {
+                    for (const err of result.entries.errors) {
+                        const errMsg = typeof err.error === 'object'
+                            ? JSON.stringify(err.error)
+                            : err.error;
+                        errors.push(`${err.file_path}: ${errMsg}`);
+                    }
+                }
+            } catch (error) {
+                console.error('Bulk entry sync failed:', error);
+                errors.push(`Bulk sync chunk: ${error.message || error}`);
+            }
+        }
+
+        for (let i = 0; i < peopleItems.length; i += BULK_CHUNK_SIZE) {
+            const chunk = peopleItems.slice(i, i + BULK_CHUNK_SIZE);
+            try {
+                const result = await this.apiClient.bulkSync([], chunk);
+                console.log(`Bulk people ${i + 1}-${i + chunk.length}: ` +
+                    `${result.people.created} created, ${result.people.updated} updated`);
+                if (result.people.errors.length > 0) {
+                    for (const err of result.people.errors) {
+                        const errMsg = typeof err.error === 'object'
+                            ? JSON.stringify(err.error)
+                            : err.error;
+                        errors.push(`${err.file_path}: ${errMsg}`);
+                    }
+                }
+            } catch (error) {
+                console.error('Bulk people sync failed:', error);
+                errors.push(`Bulk sync chunk: ${error.message || error}`);
+            }
+        }
+
         // Mirror sync: Delete items from server that don't exist locally
-        try {
-            await this.mirrorDelete(filesToSync);
-        } catch (error) {
-            console.error('Mirror delete failed:', error);
-            errors.push(`Mirror delete: ${error.message || error}`);
+        // Only runs when explicitly enabled — protects web-GUI entries
+        if (this.settings.enableMirrorDelete) {
+            try {
+                await this.mirrorDelete(filesToSync);
+            } catch (error) {
+                console.error('Mirror delete failed:', error);
+                errors.push(`Mirror delete: ${error.message || error}`);
+            }
+        } else {
+            console.log('Mirror delete disabled (enable in settings)');
         }
 
         console.log('Full sync completed');
@@ -580,7 +699,11 @@ export class SyncEngine {
     }
 
     /**
-     * Delete items from server that no longer exist in vault (mirror sync)
+     * Delete items from server that no longer exist in vault (mirror sync).
+     *
+     * Safety: Only considers entries/people that have a file_path (i.e.,
+     * originated from a file-based source).  Web-GUI entries have
+     * file_path=null and are always skipped.
      */
     private async mirrorDelete(localFiles: TFile[]): Promise<void> {
         console.log('Starting mirror delete');
@@ -592,6 +715,9 @@ export class SyncEngine {
             // Get all entries from server
             const serverEntries = await this.apiClient.listEntries();
             for (const entry of serverEntries) {
+                // Skip entries without a file_path (web-GUI, quick-capture)
+                if (!entry.file_path) continue;
+
                 if (!localPaths.has(entry.file_path)) {
                     console.log(`Deleting entry not in vault: ${entry.file_path}`);
                     await this.apiClient.deleteEntry(entry.id);
