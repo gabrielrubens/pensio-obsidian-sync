@@ -6,12 +6,11 @@ Sync your Obsidian vault with [Pensio](https://pensio.app) for AI-powered emotio
 
 ## Features
 
-- 🔄 **Automatic sync** — real-time sync when files change
-- 🔐 **Secure** — JWT authentication with device tracking
+- 🔄 **Automatic sync** — real-time sync when files change (on by default)
+- 🔐 **Secure** — JWT authentication with automatic token refresh
 - ⚡ **Selective sync** — choose which folders to sync
-- 🚫 **Smart filtering** — exclude patterns (e.g., `.obsidian`, `.trash`)
 - 📊 **Status tracking** — see sync status in status bar
-- 🔀 **Conflict resolution** — choose how to handle conflicts
+- 🧠 **Frontmatter aware** — entry type and date extracted from YAML front matter
 
 ## Installation
 
@@ -35,19 +34,16 @@ Sync your Obsidian vault with [Pensio](https://pensio.app) for AI-powered emotio
 1. **Get a Pensio account**
    - Sign up at [pensio.app](https://pensio.app) or self-host the [Pensio backend](https://github.com/gabrielrubens/pensio)
 
-2. **Configure plugin**
+2. **Get your tokens**
    - Open Settings → Pensio Sync
-   - Enter your server URL (e.g., `https://pensio.app`)
-   - Click **Connect** and log in with your credentials
-   - Set device name (optional)
+   - Click **Open token page** to visit your Pensio settings
+   - Copy your **Access Token** and **Refresh Token** and paste them in the plugin
 
 3. **Choose sync folders**
-   - Set folders to sync (e.g., `Journal, People`)
-   - Set exclude patterns if needed
+   - Set your **Journal folder** (default: `Journal`) and **People folder** (default: `People`)
+   - Each `.md` file in the journal folder becomes an entry; each in the people folder becomes a relationship
 
-4. **Enable auto-sync** (optional)
-   - Toggle "Auto-sync" on
-   - Files will sync automatically when changed
+Auto-sync is on by default. The server URL defaults to `https://www.pensio.app` — self-hosted users can change it under Advanced settings.
 
 ## Usage
 
@@ -69,33 +65,24 @@ The plugin shows sync status in the bottom status bar:
 - ✅ Success (sync completed)
 - ⚠️ Error (sync failed)
 
-### Conflict resolution
-
-Choose how to handle conflicts in settings:
-
-- **Server wins** — always use server version (default)
-- **Local wins** — always use local version
-
 ## Security & Privacy
 
 This plugin communicates with an external server (Pensio). Here is exactly what is transmitted and why:
 
 | Data sent | Purpose | When |
 |---|---|---|
-| Username & password | Authentication (exchanged for JWT tokens) | On connect |
+| Access & refresh tokens | Authentication (pasted from Pensio settings page) | On connect |
 | Journal entry content | Sync entries for AI analysis | On sync |
 | People note content | Sync relationship notes | On sync |
 | File paths & timestamps | Detect changes, resolve conflicts | On sync |
-| Device name | Identify this device in multi-device setups | On connect |
 
-**What is NOT sent**: Files outside your configured sync folders, `.obsidian` config, excluded patterns, plugin settings.
+**What is NOT sent**: Files outside your configured sync folders, `.obsidian` config, plugin settings.
 
 - All communication uses HTTPS
 - JWT tokens with automatic rotation (access: 24h, refresh: 90d)
-- Device-specific tokens (revoke per-device from the web UI)
 - Tokens stored via Electron safeStorage when available, localStorage fallback
 - No credentials stored in vault files
-- Configurable file size limits (default: 1MB)
+- Max file size: 1MB
 
 ## Development
 
@@ -160,13 +147,12 @@ src/
 - Check network connection
 
 ### "File too large"
-- Increase max entry size in settings
-- Check file is under server limit (default 1MB)
+- Files over 1MB are skipped
+- Split large files into smaller ones
 
 ### Files not syncing
-- Check file is in a configured sync folder
-- Verify file doesn't match exclude patterns
-- Enable auto-sync in settings
+- Check file is in the configured Journal or People folder
+- Auto-sync is on by default — use "Sync now" command for manual sync
 - Enable **Debug mode** in Advanced settings for detailed logs
 
 ## Support
