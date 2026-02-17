@@ -18,6 +18,7 @@ export class SyncEngine {
     private recentDeletes: Map<string, { name: string, timestamp: number }> = new Map();
     private readonly DEBOUNCE_MS = 1000; // Wait 1 second before syncing
     private readonly RENAME_DETECTION_MS = 5000; // Track deletes for 5 seconds
+    private readonly MAX_ENTRY_SIZE_MB = 1; // Max file size for sync (1MB)
 
     // Incremental sync tracking
     private lastSyncTime: number | null = null;
@@ -234,13 +235,7 @@ export class SyncEngine {
         );
         if (!inSyncFolder) return false;
 
-        // Check exclude patterns
-        const excluded = this.settings.excludePatterns.some(pattern => {
-            const regex = new RegExp(pattern.replace('**', '.*').replace('*', '[^/]*'));
-            return regex.test(file.path);
-        });
-
-        return !excluded;
+        return true;
     }
 
     /**
@@ -390,8 +385,8 @@ export class SyncEngine {
 
         // Check file size
         const sizeMB = new Blob([content]).size / (1024 * 1024);
-        if (sizeMB > this.settings.maxEntrySizeMB) {
-            throw new Error(`File too large (${sizeMB.toFixed(2)}MB > ${this.settings.maxEntrySizeMB}MB)`);
+        if (sizeMB > this.MAX_ENTRY_SIZE_MB) {
+            throw new Error(`File too large (${sizeMB.toFixed(2)}MB > ${this.MAX_ENTRY_SIZE_MB}MB)`);
         }
 
         // Sync based on content type
@@ -573,7 +568,7 @@ export class SyncEngine {
 
                 // Check file size
                 const sizeMB = new Blob([content]).size / (1024 * 1024);
-                if (sizeMB > this.settings.maxEntrySizeMB) {
+                if (sizeMB > this.MAX_ENTRY_SIZE_MB) {
                     errors.push(`${file.path}: File too large (${sizeMB.toFixed(2)}MB)`);
                     continue;
                 }

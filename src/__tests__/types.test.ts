@@ -2,11 +2,10 @@ import { CreateEntryRequest, CreatePersonRequest, DEFAULT_SETTINGS, PersonRespon
 
 describe('PensioSettings', () => {
     it('should have correct default settings', () => {
-        expect(DEFAULT_SETTINGS.apiUrl).toBe('');
+        expect(DEFAULT_SETTINGS.apiUrl).toBe('https://www.pensio.app');
         expect(DEFAULT_SETTINGS.apiToken).toBe('');
         expect(DEFAULT_SETTINGS.deviceId).toBe('');
-        expect(DEFAULT_SETTINGS.autoSync).toBe(false);
-        expect(DEFAULT_SETTINGS.syncInterval).toBe(5);
+        expect(DEFAULT_SETTINGS.autoSync).toBe(true);
     });
 
     it('should have individual folder settings', () => {
@@ -22,21 +21,19 @@ describe('PensioSettings', () => {
         expect((DEFAULT_SETTINGS as any).syncFolders).toBeUndefined();
     });
 
-    it('should have exclude patterns', () => {
-        expect(DEFAULT_SETTINGS.excludePatterns).toContain('.obsidian/**');
-        expect(DEFAULT_SETTINGS.excludePatterns).toContain('.trash/**');
-    });
-
-    it('should have conflict resolution strategy', () => {
-        expect(DEFAULT_SETTINGS.conflictResolution).toBe('server-wins');
-    });
-
-    it('should have max entry size', () => {
-        expect(DEFAULT_SETTINGS.maxEntrySizeMB).toBe(5);
+    it('should not have removed settings', () => {
+        expect((DEFAULT_SETTINGS as any).excludePatterns).toBeUndefined();
+        expect((DEFAULT_SETTINGS as any).conflictResolution).toBeUndefined();
+        expect((DEFAULT_SETTINGS as any).maxEntrySizeMB).toBeUndefined();
+        expect((DEFAULT_SETTINGS as any).syncInterval).toBeUndefined();
     });
 
     it('should have mirror delete disabled by default', () => {
         expect(DEFAULT_SETTINGS.enableMirrorDelete).toBe(false);
+    });
+
+    it('should have debug mode disabled by default', () => {
+        expect(DEFAULT_SETTINGS.debugMode).toBe(false);
     });
 });
 

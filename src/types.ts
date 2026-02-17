@@ -7,12 +7,8 @@ export interface PensioSettings {
     refreshToken: string; // Store refresh token for auto-renewal
     deviceId: string;
     autoSync: boolean;
-    syncInterval: number; // minutes
     journalFolder: string; // folder for journal entries
     peopleFolder: string; // folder for people notes
-    excludePatterns: string[]; // glob patterns to exclude
-    maxEntrySizeMB: number;
-    conflictResolution: 'server-wins' | 'local-wins' | 'ask';
     enableMirrorDelete: boolean; // delete server entries not found locally
     debugMode: boolean; // enable verbose console logging
 }
@@ -21,17 +17,13 @@ export interface PensioSettings {
  * Default plugin settings
  */
 export const DEFAULT_SETTINGS: PensioSettings = {
-    apiUrl: '',
+    apiUrl: 'https://www.pensio.app',
     apiToken: '',
     refreshToken: '',
     deviceId: '',
-    autoSync: false,
-    syncInterval: 5,
+    autoSync: true,
     journalFolder: 'Journal',
     peopleFolder: 'People',
-    excludePatterns: ['.obsidian/**', '.trash/**'],
-    maxEntrySizeMB: 5,
-    conflictResolution: 'server-wins',
     enableMirrorDelete: false,
     debugMode: false
 };
