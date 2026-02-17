@@ -16,9 +16,12 @@ export class SyncEngine {
     private isSyncing = false;
     private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
     private recentDeletes: Map<string, { name: string, timestamp: number }> = new Map();
+    private syncIntervalTimer: NodeJS.Timeout | null = null;
     private readonly DEBOUNCE_MS = 1000; // Wait 1 second before syncing
     private readonly RENAME_DETECTION_MS = 5000; // Track deletes for 5 seconds
     private readonly MAX_ENTRY_SIZE_MB = 1; // Max file size for sync (1MB)
+    private readonly SYNC_INTERVAL_MS = 5 * 60 * 1000; // Periodic sync every 5 minutes
+    private readonly INITIAL_SYNC_DELAY_MS = 5000; // Wait 5 seconds for vault to index
 
     // Incremental sync tracking
     private lastSyncTime: number | null = null;
@@ -56,18 +59,59 @@ export class SyncEngine {
     }
 
     /**
-     * Stop watching for file changes
+     * Stop watching for file changes and periodic sync
      */
     stopWatching(): void {
         if (!this.isWatching) return;
 
-        debugLog('Stopping file watcher');
+        debugLog('Stopping file watcher and periodic sync');
         this.isWatching = false;
+
+        // Clear periodic sync timer
+        if (this.syncIntervalTimer) {
+            clearInterval(this.syncIntervalTimer);
+            this.syncIntervalTimer = null;
+        }
 
         // Unregister event handlers
         this.app.vault.off('create', this.boundOnFileCreated);
         this.app.vault.off('modify', this.boundOnFileModified);
         this.app.vault.off('delete', this.boundOnFileDeleted);
+    }
+
+    /**
+     * Start auto-sync: initial sync after delay + periodic sync every 5 minutes.
+     * Called from main.ts on plugin load and after settings change.
+     */
+    startAutoSync(): void {
+        // Wait for vault to finish indexing before initial sync
+        setTimeout(async () => {
+            if (!this.isWatching) return; // Stopped before timer fired
+            debugLog('Running initial sync...');
+            try {
+                await this.syncAll(false);
+                debugLog('Initial sync completed');
+            } catch (error) {
+                console.error('Initial sync failed:', error);
+            }
+        }, this.INITIAL_SYNC_DELAY_MS);
+
+        // Set up periodic sync (every 5 minutes)
+        if (this.syncIntervalTimer) {
+            clearInterval(this.syncIntervalTimer);
+        }
+        this.syncIntervalTimer = setInterval(async () => {
+            if (this.isSyncing) {
+                debugLog('Periodic sync skipped — sync already in progress');
+                return;
+            }
+            debugLog('Running periodic sync...');
+            try {
+                await this.syncAll(false);
+            } catch (error) {
+                console.error('Periodic sync failed:', error);
+            }
+        }, this.SYNC_INTERVAL_MS);
     }
 
     /**

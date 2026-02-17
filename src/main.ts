@@ -32,9 +32,10 @@ export default class PensioPlugin extends Plugin {
         // Register commands
         this.registerCommands();
 
-        // Start file watcher if configured
+        // Start file watcher + initial sync if configured
         if (this.settings.autoSync && this.settings.apiUrl && this.settings.apiToken) {
             this.syncEngine.startWatching();
+            this.syncEngine.startAutoSync();
         }
 
         new Notice('Pensio plugin loaded');
@@ -56,10 +57,11 @@ export default class PensioPlugin extends Plugin {
         // Update API client with new settings
         this.apiClient.updateSettings(this.settings);
 
-        // Restart watcher if auto-sync is enabled
+        // Restart watcher + auto-sync if enabled
         this.syncEngine.stopWatching();
         if (this.settings.autoSync && this.settings.apiUrl && this.settings.apiToken) {
             this.syncEngine.startWatching();
+            this.syncEngine.startAutoSync();
         }
     }
 
