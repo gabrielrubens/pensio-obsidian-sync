@@ -39,7 +39,7 @@ export class SyncEngine {
         app: App,
         settings: PensioSettings,
         apiClient: ApiClient,
-        private onSaveState: (state: SyncStateData) => Promise<void> = async () => {}
+        private onSaveState: (state: SyncStateData) => Promise<void> = async () => { }
     ) {
         this.app = app;
         this.settings = settings;
