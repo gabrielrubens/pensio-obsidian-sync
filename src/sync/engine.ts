@@ -1,7 +1,8 @@
 import { App, TAbstractFile, TFile } from 'obsidian';
 import { ApiClient } from '../api/client';
 import { debugLog } from '../logger';
-import { BulkSyncItem, CreateEntryRequest, CreatePersonRequest, PensioSettings, SyncQueueItem } from '../types';
+import { BulkSyncItem, CreateEntryRequest, CreatePersonRequest, PensioSettings, SyncedFileInfo, SyncQueueItem, SyncStateData } from '../types';
+import { computeContentHash } from './hash';
 import { extractDateFromFilename, parseMarkdown } from './parser';
 
 /**
@@ -22,17 +23,24 @@ export class SyncEngine {
     private readonly MAX_ENTRY_SIZE_MB = 1; // Max file size for sync (1MB)
     private readonly SYNC_INTERVAL_MS = 5 * 60 * 1000; // Periodic sync every 5 minutes
     private readonly INITIAL_SYNC_DELAY_MS = 5000; // Wait 5 seconds for vault to index
+    private readonly STATE_SAVE_DEBOUNCE_MS = 5000; // Debounce state persistence (5s)
 
-    // Incremental sync tracking
+    // Incremental sync tracking (persisted via onSaveState callback)
     private lastSyncTime: number | null = null;
-    private syncedFiles: Map<string, { mtime: number, hash: string }> = new Map();
+    private syncedFiles: Map<string, SyncedFileInfo> = new Map();
+    private stateSaveTimer: NodeJS.Timeout | null = null;
 
     // Bind handlers once to preserve reference for cleanup
     private readonly boundOnFileCreated: (file: TAbstractFile) => Promise<void>;
     private readonly boundOnFileModified: (file: TAbstractFile) => Promise<void>;
     private readonly boundOnFileDeleted: (file: TAbstractFile) => Promise<void>;
 
-    constructor(app: App, settings: PensioSettings, apiClient: ApiClient) {
+    constructor(
+        app: App,
+        settings: PensioSettings,
+        apiClient: ApiClient,
+        private onSaveState: (state: SyncStateData) => Promise<void> = async () => {}
+    ) {
         this.app = app;
         this.settings = settings;
         this.apiClient = apiClient;
@@ -71,6 +79,13 @@ export class SyncEngine {
         if (this.syncIntervalTimer) {
             clearInterval(this.syncIntervalTimer);
             this.syncIntervalTimer = null;
+        }
+
+        // Flush pending state save
+        if (this.stateSaveTimer) {
+            clearTimeout(this.stateSaveTimer);
+            this.stateSaveTimer = null;
+            this.persistState();
         }
 
         // Unregister event handlers
@@ -294,43 +309,40 @@ export class SyncEngine {
     }
 
     /**
-     * Check if file needs syncing based on modification time
-     * Returns true if file is new or modified since last sync
+     * Check if file needs syncing based on content hash.
+     * Fast path: skip if mtime unchanged.
+     * Slow path: compute SHA-256 hash and compare with stored hash.
      */
     private async needsSync(file: TFile): Promise<boolean> {
-        // If no last sync time, sync everything
-        if (!this.lastSyncTime) {
-            return true;
-        }
-
-        // Check if file was modified since last sync
-        if (file.stat.mtime > this.lastSyncTime) {
-            return true;
-        }
-
-        // Check tracked file info
         const tracked = this.syncedFiles.get(file.path);
         if (!tracked) {
-            // File not tracked yet, needs sync
-            return true;
+            return true;  // New file, never synced
         }
 
-        // Check if mtime changed
-        if (file.stat.mtime !== tracked.mtime) {
-            return true;
+        // Fast path: mtime unchanged → content unchanged
+        if (file.stat.mtime === tracked.mtime) {
+            return false;
         }
 
-        // Optionally check content hash (for now, mtime is sufficient)
-        return false;
+        // mtime changed — compute hash to verify content actually changed
+        const content = await this.app.vault.read(file);
+        const hash = await computeContentHash(content);
+        if (hash === tracked.hash) {
+            // Content identical despite mtime change — update mtime tracking
+            this.syncedFiles.set(file.path, { hash, mtime: file.stat.mtime });
+            return false;
+        }
+
+        return true;  // Content truly changed
     }
 
     /**
      * Update file tracking after successful sync
      */
-    private updateFileTracking(file: TFile, hash?: string): void {
+    private updateFileTracking(file: TFile, hash: string): void {
         this.syncedFiles.set(file.path, {
             mtime: file.stat.mtime,
-            hash: hash || ''
+            hash,
         });
     }
 
@@ -339,6 +351,65 @@ export class SyncEngine {
      */
     private removeFileTracking(filePath: string): void {
         this.syncedFiles.delete(filePath);
+    }
+
+    // ========================================================================
+    // State Persistence
+    // ========================================================================
+
+    /**
+     * Restore sync state from persisted data (called on plugin load).
+     * This is the key defense against re-uploading all files on reload.
+     */
+    restoreState(state: SyncStateData): void {
+        this.lastSyncTime = state.lastSyncTime;
+        this.syncedFiles = new Map(
+            Object.entries(state.files).map(([path, info]) => [
+                path,
+                { mtime: info.mtime, hash: info.hash },
+            ])
+        );
+        debugLog(
+            `Restored sync state: ${this.syncedFiles.size} tracked files, ` +
+            `lastSync=${state.lastSyncTime ? new Date(state.lastSyncTime).toISOString() : 'never'}`
+        );
+    }
+
+    /**
+     * Get current sync state for persistence
+     */
+    getState(): SyncStateData {
+        const files: Record<string, SyncedFileInfo> = {};
+        for (const [path, info] of this.syncedFiles) {
+            files[path] = { hash: info.hash, mtime: info.mtime };
+        }
+        return { lastSyncTime: this.lastSyncTime, files };
+    }
+
+    /**
+     * Persist sync state immediately
+     */
+    private async persistState(): Promise<void> {
+        try {
+            await this.onSaveState(this.getState());
+            debugLog('Sync state persisted:', this.syncedFiles.size, 'files');
+        } catch (error) {
+            console.error('Failed to persist sync state:', error);
+        }
+    }
+
+    /**
+     * Debounced state persistence (for file watcher events).
+     * Batches rapid file changes into a single disk write.
+     */
+    private debouncedPersistState(): void {
+        if (this.stateSaveTimer) {
+            clearTimeout(this.stateSaveTimer);
+        }
+        this.stateSaveTimer = setTimeout(async () => {
+            await this.persistState();
+            this.stateSaveTimer = null;
+        }, this.STATE_SAVE_DEBOUNCE_MS);
     }
 
     /**
@@ -426,21 +497,23 @@ export class SyncEngine {
     async syncFile(file: TFile, forceSync: boolean = false): Promise<boolean> {
         debugLog('Syncing file:', file.path);
 
-        // Check if file needs syncing (incremental sync optimization)
-        if (!forceSync) {
-            const needsSync = await this.needsSync(file);
-            if (!needsSync) {
-                debugLog('File unchanged, skipping sync:', file.path);
-                return false;
-            }
+        // Read file content and compute hash
+        const content = await this.app.vault.read(file);
+        const hash = await computeContentHash(content);
+
+        // Hash-based dedup: always check, even on force sync.
+        // This is the key safety net — identical content is never re-uploaded.
+        const tracked = this.syncedFiles.get(file.path);
+        if (tracked && tracked.hash === hash) {
+            debugLog('File unchanged (hash match), skipping:', file.path);
+            // Update mtime tracking in case it changed
+            this.syncedFiles.set(file.path, { hash, mtime: file.stat.mtime });
+            return false;
         }
 
         // Determine content type based on folder
         const contentType = this.detectContentType(file.path);
         debugLog(`Content type detected: ${contentType}`);
-
-        // Read file content
-        const content = await this.app.vault.read(file);
 
         // Parse markdown
         const parsed = parseMarkdown(content);
@@ -459,7 +532,8 @@ export class SyncEngine {
         }
 
         // Update file tracking after successful sync
-        this.updateFileTracking(file);
+        this.updateFileTracking(file, hash);
+        this.debouncedPersistState();
         return true;
     }
 
@@ -613,13 +687,15 @@ export class SyncEngine {
             throw new Error('Authentication expired. Please log in again in Pensio settings.');
         }
 
-        debugLog(forceSync ? 'Starting force sync (ignoring change detection)' : 'Starting incremental sync');
+        debugLog(forceSync
+            ? 'Starting force sync (re-checking all files, hash dedup active)'
+            : 'Starting incremental sync');
 
         const syncStartTime = Date.now();
         const files = this.app.vault.getMarkdownFiles();
         const filesToSync = files.filter(file => this.shouldSyncFile(file));
 
-        debugLog(`Found ${filesToSync.length} files to sync`);
+        debugLog(`Found ${filesToSync.length} files to check`);
 
         // Track errors
         const errors: string[] = [];
@@ -631,16 +707,30 @@ export class SyncEngine {
 
         for (const file of filesToSync) {
             try {
-                // Skip unchanged files unless force-syncing
+                // Incremental mode: fast-path mtime check (avoids file read)
                 if (!forceSync) {
-                    const needsSync = await this.needsSync(file);
-                    if (!needsSync) {
+                    const trackedFile = this.syncedFiles.get(file.path);
+                    if (trackedFile && file.stat.mtime === trackedFile.mtime) {
                         skippedCount++;
                         continue;
                     }
                 }
 
+                // Read file and compute content hash
                 const content = await this.app.vault.read(file);
+                const hash = await computeContentHash(content);
+
+                // Hash-based dedup: skip if content unchanged (both modes)
+                // This is the key safety net — even force sync won't re-upload
+                // identical content, preventing unnecessary LLM costs.
+                const tracked = this.syncedFiles.get(file.path);
+                if (tracked && tracked.hash === hash) {
+                    skippedCount++;
+                    // Update mtime in tracking (mtime may have changed)
+                    this.syncedFiles.set(file.path, { hash, mtime: file.stat.mtime });
+                    continue;
+                }
+
                 const parsed = parseMarkdown(content);
                 const contentType = this.detectContentType(file.path);
 
@@ -691,8 +781,8 @@ export class SyncEngine {
                     });
                 }
 
-                // Update tracking after preparing (will be confirmed after API call)
-                this.updateFileTracking(file);
+                // Update tracking after preparing
+                this.updateFileTracking(file, hash);
             } catch (error) {
                 console.error(`Failed to prepare ${file.path}:`, error);
                 errors.push(`${file.path}: ${error.message || error}`);
@@ -700,8 +790,9 @@ export class SyncEngine {
         }
 
         if (skippedCount > 0) {
-            debugLog(`Skipped ${skippedCount} unchanged files`);
+            debugLog(`Skipped ${skippedCount} unchanged files (hash dedup)`);
         }
+        debugLog(`Syncing ${entryItems.length} entries + ${peopleItems.length} people`);
 
         // Send in chunks of BULK_CHUNK_SIZE
         const BULK_CHUNK_SIZE = 50;
@@ -764,8 +855,11 @@ export class SyncEngine {
         // Update last sync time after successful sync
         if (errors.length === 0) {
             this.lastSyncTime = syncStartTime;
-            debugLog('Incremental sync enabled - tracking', this.syncedFiles.size, 'files');
+            debugLog('Sync complete — tracking', this.syncedFiles.size, 'files');
         }
+
+        // Always persist state (even with errors, to save tracking of successful files)
+        await this.persistState();
 
         // Throw error if any failures occurred
         if (errors.length > 0) {

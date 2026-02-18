@@ -3,13 +3,14 @@ import { ApiClient } from './api/client';
 import { setDebugMode } from './logger';
 import { PensioSettingTab } from './settings';
 import { SyncEngine } from './sync/engine';
-import { DEFAULT_SETTINGS, PensioSettings } from './types';
+import { DEFAULT_SETTINGS, PensioSettings, SyncStateData } from './types';
 
 export default class PensioPlugin extends Plugin {
     settings: PensioSettings;
     apiClient: ApiClient;
     syncEngine: SyncEngine;
     statusBarItem: HTMLElement;
+    private _syncState: SyncStateData | null = null;
 
     async onload() {
         // Load settings
@@ -19,8 +20,18 @@ export default class PensioPlugin extends Plugin {
         // Initialize API client
         this.apiClient = new ApiClient(this.settings);
 
-        // Initialize sync engine
-        this.syncEngine = new SyncEngine(this.app, this.settings, this.apiClient);
+        // Initialize sync engine with state persistence callback
+        this.syncEngine = new SyncEngine(
+            this.app,
+            this.settings,
+            this.apiClient,
+            async (state: SyncStateData) => this.saveSyncState(state)
+        );
+
+        // Restore persisted sync state (survives plugin reloads)
+        if (this._syncState) {
+            this.syncEngine.restoreState(this._syncState);
+        }
 
         // Add status bar item
         this.statusBarItem = this.addStatusBarItem();
@@ -47,7 +58,14 @@ export default class PensioPlugin extends Plugin {
     }
 
     async loadSettings() {
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+        const rawData = (await this.loadData()) || {};
+
+        // Extract sync state before merging with settings defaults
+        this._syncState = rawData._syncState || null;
+        const settingsData = { ...rawData };
+        delete settingsData._syncState;
+
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, settingsData);
 
         // Migrate legacy journalFolder → journalFolders (pre-v0.1.4)
         if (this.settings.journalFolder && (!this.settings.journalFolders || this.settings.journalFolders.length === 0)) {
@@ -55,12 +73,17 @@ export default class PensioPlugin extends Plugin {
                 { folder: this.settings.journalFolder, entryType: 'daily_journal', label: 'Daily Journal' },
             ];
             this.settings.journalFolder = '';
-            await this.saveData(this.settings);
+            await this.saveData({ ...this.settings, _syncState: this._syncState });
         }
     }
 
     async saveSettings() {
-        await this.saveData(this.settings);
+        // Preserve sync state when saving settings
+        const dataToSave: Record<string, any> = { ...this.settings };
+        if (this._syncState) {
+            dataToSave._syncState = this._syncState;
+        }
+        await this.saveData(dataToSave);
         setDebugMode(this.settings.debugMode);
 
         // Update API client with new settings
@@ -179,5 +202,16 @@ export default class PensioPlugin extends Plugin {
         if (status === 'success' || status === 'error') {
             setTimeout(() => this.updateStatusBar('idle'), 3000);
         }
+    }
+
+    /**
+     * Save sync state alongside settings in data.json.
+     * Called by the SyncEngine after successful sync operations.
+     */
+    private async saveSyncState(state: SyncStateData): Promise<void> {
+        this._syncState = state;
+        const dataToSave: Record<string, any> = { ...this.settings };
+        dataToSave._syncState = state;
+        await this.saveData(dataToSave);
     }
 }

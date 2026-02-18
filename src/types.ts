@@ -150,15 +150,38 @@ export interface BulkSyncResponse {
         created: number;
         updated: number;
         deleted: number;
+        skipped: number;
         errors: Array<{ file_path: string; error: string }>;
     };
     people: {
         created: number;
         updated: number;
         deleted: number;
+        skipped: number;
         errors: Array<{ file_path: string; error: string }>;
     };
     total_time_ms: number;
+}
+
+/**
+ * Persistent sync state — survives plugin reloads.
+ * Stored in data.json alongside settings under _syncState key.
+ */
+export interface SyncStateData {
+    /** Timestamp (ms) of last successful full sync */
+    lastSyncTime: number | null;
+    /** Per-file tracking: path → hash + mtime */
+    files: Record<string, SyncedFileInfo>;
+}
+
+/**
+ * Tracked file info for incremental sync.
+ */
+export interface SyncedFileInfo {
+    /** SHA-256 of raw file content */
+    hash: string;
+    /** File modification time at last sync (ms since epoch) */
+    mtime: number;
 }
 
 /**
