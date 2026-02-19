@@ -22,6 +22,9 @@
     ],
     "author": "Pensio",
     "license": "MIT",
+    "overrides": {
+        "minimatch": "^9.0.5"
+    },
     "devDependencies": {
         "@types/jest": "^30.0.0",
         "@types/node": "^20.10.0",
