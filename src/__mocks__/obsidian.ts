@@ -4,8 +4,8 @@
  */
 module.exports = {
     Notice: jest.fn(),
-    Plugin: class Plugin {},
-    PluginSettingTab: class PluginSettingTab {},
+    Plugin: class Plugin { },
+    PluginSettingTab: class PluginSettingTab { },
     Setting: class Setting {
         setName() { return this; }
         setDesc() { return this; }
@@ -15,10 +15,10 @@ module.exports = {
         addButton() { return this; }
         addDropdown() { return this; }
     },
-    App: class App {},
-    TFile: class TFile {},
-    TFolder: class TFolder {},
-    TAbstractFile: class TAbstractFile {},
-    FuzzySuggestModal: class FuzzySuggestModal {},
+    App: class App { },
+    TFile: class TFile { },
+    TFolder: class TFolder { },
+    TAbstractFile: class TAbstractFile { },
+    FuzzySuggestModal: class FuzzySuggestModal { },
     requestUrl: jest.fn(),
 };

@@ -1,4 +1,4 @@
-import { AccountGuard, VerifyResult } from '../../auth/accountGuard';
+import { AccountGuard } from '../../auth/accountGuard';
 import { CurrentUserResponse, SyncStateData } from '../../types';
 
 // Mock logger
