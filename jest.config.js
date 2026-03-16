@@ -3,6 +3,9 @@ module.exports = {
     testEnvironment: 'node',
     roots: ['<rootDir>/src'],
     testMatch: ['**/__tests__/**/*.test.ts'],
+    moduleNameMapper: {
+        '^obsidian$': '<rootDir>/src/__mocks__/obsidian.ts',
+    },
     collectCoverageFrom: [
         'src/**/*.ts',
         '!src/**/*.d.ts',

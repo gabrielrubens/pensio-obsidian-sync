@@ -1,4 +1,4 @@
-import { CreateEntryRequest, CreatePersonRequest, DEFAULT_SETTINGS, PersonResponse } from '../types';
+import { CreateEntryRequest, CreatePersonRequest, CurrentUserResponse, DEFAULT_SETTINGS, PersonResponse, SyncStateData } from '../types';
 
 describe('PensioSettings', () => {
     it('should have correct default settings', () => {
@@ -133,6 +133,39 @@ describe('Folder Type Detection Logic', () => {
         // Empty folder should not match
         expect(filePath.startsWith(emptyFolder + '/')).toBe(false);
         expect(emptyFolder.trim().length === 0).toBe(true);
+    });
+});
+
+describe('SyncStateData', () => {
+    it('should include userId field', () => {
+        const state: SyncStateData = {
+            userId: 'user-uuid-123',
+            lastSyncTime: Date.now(),
+            files: {},
+        };
+        expect(state.userId).toBe('user-uuid-123');
+    });
+
+    it('should allow null userId (legacy / first connection)', () => {
+        const state: SyncStateData = {
+            userId: null,
+            lastSyncTime: null,
+            files: {},
+        };
+        expect(state.userId).toBeNull();
+    });
+});
+
+describe('CurrentUserResponse', () => {
+    it('should have id, email, and username', () => {
+        const user: CurrentUserResponse = {
+            id: 'uuid-456',
+            email: 'test@example.com',
+            username: 'testuser',
+        };
+        expect(user.id).toBe('uuid-456');
+        expect(user.email).toBe('test@example.com');
+        expect(user.username).toBe('testuser');
     });
 });
 

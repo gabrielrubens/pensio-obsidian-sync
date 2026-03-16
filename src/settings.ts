@@ -213,11 +213,19 @@ export class PensioSettingTab extends PluginSettingTab {
     }
 
     /**
-     * Render the connection section: tokens, status, and test button.
+     * Render the connection section: tokens, status, account info, and test button.
      */
     private renderConnectionStatus(containerEl: HTMLElement): void {
         const apiUrl = this.plugin.settings.apiUrl;
         const hasBothTokens = this.plugin.settings.apiToken && this.plugin.settings.refreshToken;
+
+        // Connected account info (show who we're syncing to)
+        const account = this.plugin.accountGuard.getAccount();
+        if (account) {
+            new Setting(containerEl)
+                .setName('Connected account')
+                .setDesc(`${account.email}`);
+        }
 
         // Token page link
         if (apiUrl) {
@@ -278,8 +286,8 @@ export class PensioSettingTab extends PluginSettingTab {
                     const timeUntilExpiry = expiry.getTime() - Date.now();
                     const hoursUntilExpiry = Math.floor(timeUntilExpiry / (1000 * 60 * 60));
                     const expiryText = hoursUntilExpiry > 0
-                        ? `Token expires in ${hoursUntilExpiry}h — auto-refreshes`
-                        : 'Token expired — will auto-refresh on next sync';
+                        ? `Token expires in ${hoursUntilExpiry}h \u2014 auto-refreshes`
+                        : 'Token expired \u2014 will auto-refresh on next sync';
 
                     new Setting(containerEl)
                         .setName('Status')
@@ -291,7 +299,7 @@ export class PensioSettingTab extends PluginSettingTab {
         // Test connection
         new Setting(containerEl)
             .setName('Test connection')
-            .setDesc('Verify your credentials work')
+            .setDesc('Verify your credentials and account identity')
             .addButton(button => {
                 button
                     .setButtonText('Test')
@@ -303,9 +311,23 @@ export class PensioSettingTab extends PluginSettingTab {
                         try {
                             button.setDisabled(true);
                             button.setButtonText('Testing...');
+
+                            // Verify account identity (also populates cached account)
+                            const verified = await this.plugin.verifyAccountBeforeSync();
+                            if (!verified) {
+                                new Notice('Connection failed: could not verify account');
+                                button.setButtonText('Failed');
+                                return;
+                            }
+
                             const status = await this.plugin.apiClient.getSyncStatus();
-                            new Notice(`Connected! ${status.total_entries} entries synced`);
+                            const acct = this.plugin.accountGuard.getAccount();
+                            const acctInfo = acct ? ` (${acct.email})` : '';
+                            new Notice(`Connected${acctInfo}! ${status.total_entries} entries synced`);
                             button.setButtonText('Connected');
+
+                            // Refresh the settings tab to show account info
+                            this.display();
                         } catch (error) {
                             new Notice(`Connection failed: ${error.message}`);
                             button.setButtonText('Failed');

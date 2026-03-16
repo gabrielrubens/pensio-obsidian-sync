@@ -64,6 +64,16 @@ export interface TokenResponse {
     device_name: string;
 }
 
+/**
+ * Response from GET /api/v1/auth/me/
+ * Used for account-switch detection.
+ */
+export interface CurrentUserResponse {
+    id: string;
+    email: string;
+    username: string;
+}
+
 export interface SyncStatusResponse {
     last_sync: string | null;
     total_entries: number;
@@ -168,6 +178,8 @@ export interface BulkSyncResponse {
  * Stored in data.json alongside settings under _syncState key.
  */
 export interface SyncStateData {
+    /** User ID (UUID) this sync state belongs to. Null for legacy data. */
+    userId: string | null;
     /** Timestamp (ms) of last successful full sync */
     lastSyncTime: number | null;
     /** Per-file tracking: path → hash + mtime */

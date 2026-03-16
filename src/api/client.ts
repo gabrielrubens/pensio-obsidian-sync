@@ -7,6 +7,7 @@ import {
     BulkSyncResponse,
     CreateEntryRequest,
     CreatePersonRequest,
+    CurrentUserResponse,
     EntryResponse,
     PensioSettings,
     PersonResponse,
@@ -27,7 +28,7 @@ export class ApiClient {
     constructor(settings: PensioSettings) {
         this.settings = settings;
         this.cache = new CacheManager();
-        this.tokenManager = new TokenManager(settings.apiUrl);
+        this.tokenManager = new TokenManager(settings.apiUrl, settings.deviceId);
 
         // Initialize token manager if we have tokens
         if (settings.apiToken && settings.refreshToken) {
@@ -43,6 +44,7 @@ export class ApiClient {
     updateSettings(settings: PensioSettings): void {
         this.settings = settings;
         this.tokenManager.updateApiUrl(settings.apiUrl);
+        this.tokenManager.updateDeviceId(settings.deviceId);
 
         // Reinitialize if tokens changed
         if (settings.apiToken && settings.refreshToken) {
@@ -194,6 +196,17 @@ export class ApiClient {
         await this.tokenManager.initialize(response.access, response.refresh);
 
         return response;
+    }
+
+    /**
+     * Fetch the currently authenticated user's identity.
+     * Used by the account guard to detect account switches.
+     */
+    async fetchCurrentUser(): Promise<CurrentUserResponse> {
+        return await this.request<CurrentUserResponse>(
+            'GET',
+            '/api/v1/auth/me/'
+        );
     }
 
     /**

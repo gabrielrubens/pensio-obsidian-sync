@@ -14,6 +14,7 @@ import { TokenData, TokenStorage } from './tokenStorage';
 export class TokenManager {
     private storage: TokenStorage;
     private apiUrl: string;
+    private deviceId: string;
     private refreshPromise: Promise<TokenData> | null = null;
     private refreshTimer: NodeJS.Timeout | null = null;
     /**
@@ -23,9 +24,10 @@ export class TokenManager {
      */
     private authInvalidated = false;
 
-    constructor(apiUrl: string) {
+    constructor(apiUrl: string, deviceId: string = '') {
         this.storage = new TokenStorage();
         this.apiUrl = apiUrl;
+        this.deviceId = deviceId;
     }
 
     /**
@@ -123,17 +125,19 @@ export class TokenManager {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    refresh: tokens.refreshToken
+                    refresh: tokens.refreshToken,
+                    device_id: this.deviceId,
                 })
             });
 
-            const data: { access: string } = response.json;
+            const data: { access: string; refresh?: string } = response.json;
 
             // Update stored tokens with new access token
+            // If backend rotates the refresh token, use the new one
             const expiresAt = Date.now() + (24 * 60 * 60 * 1000);
             const newTokens: TokenData = {
                 accessToken: data.access,
-                refreshToken: tokens.refreshToken, // Keep same refresh token
+                refreshToken: data.refresh || tokens.refreshToken,
                 expiresAt
             };
 
@@ -292,6 +296,13 @@ export class TokenManager {
      */
     updateApiUrl(apiUrl: string): void {
         this.apiUrl = apiUrl;
+    }
+
+    /**
+     * Update device ID (when settings change)
+     */
+    updateDeviceId(deviceId: string): void {
+        this.deviceId = deviceId;
     }
 
     /**

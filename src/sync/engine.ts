@@ -29,6 +29,7 @@ export class SyncEngine {
     private lastSyncTime: number | null = null;
     private syncedFiles: Map<string, SyncedFileInfo> = new Map();
     private stateSaveTimer: NodeJS.Timeout | null = null;
+    private userId: string | null = null;
 
     // Bind handlers once to preserve reference for cleanup
     private readonly boundOnFileCreated: (file: TAbstractFile) => Promise<void>;
@@ -362,6 +363,7 @@ export class SyncEngine {
      * This is the key defense against re-uploading all files on reload.
      */
     restoreState(state: SyncStateData): void {
+        this.userId = state.userId ?? null;
         this.lastSyncTime = state.lastSyncTime;
         this.syncedFiles = new Map(
             Object.entries(state.files).map(([path, info]) => [
@@ -371,6 +373,7 @@ export class SyncEngine {
         );
         debugLog(
             `Restored sync state: ${this.syncedFiles.size} tracked files, ` +
+            `userId=${this.userId || 'none'}, ` +
             `lastSync=${state.lastSyncTime ? new Date(state.lastSyncTime).toISOString() : 'never'}`
         );
     }
@@ -383,7 +386,33 @@ export class SyncEngine {
         for (const [path, info] of this.syncedFiles) {
             files[path] = { hash: info.hash, mtime: info.mtime };
         }
-        return { lastSyncTime: this.lastSyncTime, files };
+        return { userId: this.userId, lastSyncTime: this.lastSyncTime, files };
+    }
+
+    /**
+     * Clear all sync tracking state (account switch, logout).
+     * Forces a full re-sync on next run.
+     */
+    clearState(): void {
+        debugLog('Clearing sync state (account switch or logout)');
+        this.userId = null;
+        this.lastSyncTime = null;
+        this.syncedFiles.clear();
+    }
+
+    /**
+     * Set the userId that owns this sync state.
+     * Called by the account guard after successful verification.
+     */
+    setUserId(userId: string): void {
+        this.userId = userId;
+    }
+
+    /**
+     * Get the userId currently associated with this sync state.
+     */
+    getUserId(): string | null {
+        return this.userId;
     }
 
     /**
