@@ -166,8 +166,8 @@ export default class PensioPlugin extends Plugin {
                 new Notice('Starting incremental sync...');
                 try {
                     if (!await this.verifyAccountBeforeSync()) return;
-                    await this.syncEngine.syncAll(false);  // Incremental sync
-                    new Notice('Sync completed successfully');
+                    const result = await this.syncEngine.syncAll(false);
+                    new Notice(`Sync done: ${result.synced} synced, ${result.skipped} unchanged, ${result.total} total files`);
                 } catch (error) {
                     new Notice(`Sync failed: ${error.message}`);
                     console.error('Sync error:', error);
@@ -183,8 +183,8 @@ export default class PensioPlugin extends Plugin {
                 new Notice('Starting force sync (all files)...');
                 try {
                     if (!await this.verifyAccountBeforeSync()) return;
-                    await this.syncEngine.syncAll(true);  // Force sync
-                    new Notice('Force sync completed successfully');
+                    const result = await this.syncEngine.syncAll(true);
+                    new Notice(`Force sync done: ${result.synced} synced, ${result.skipped} unchanged, ${result.total} total files`);
                 } catch (error) {
                     new Notice(`Sync failed: ${error.message}`);
                     console.error('Sync error:', error);
@@ -212,8 +212,8 @@ export default class PensioPlugin extends Plugin {
                 try {
                     if (!await this.verifyAccountBeforeSync()) return;
                     this.syncEngine.markDirty(file.path);
-                    await this.syncEngine.syncAll(false);
-                    new Notice('File synced successfully');
+                    const result = await this.syncEngine.syncAll(false);
+                    new Notice(`File sync done: ${result.synced} synced`);
                 } catch (error) {
                     new Notice(`Sync failed: ${error.message}`);
                     console.error('Sync error:', error);

@@ -300,13 +300,13 @@ export class SyncEngine {
     // syncAll — the single sync path
     // ========================================================================
 
-    async syncAll(forceSync: boolean = false): Promise<void> {
+    async syncAll(forceSync: boolean = false): Promise<{ synced: number; skipped: number; errors: number; total: number }> {
         if (this.apiClient.isAuthInvalidated()) {
             throw new Error('Authentication expired. Please log in again in Pensio settings.');
         }
         if (this.isSyncing) {
             debugLog('syncAll skipped — already in progress');
-            return;
+            return { synced: 0, skipped: 0, errors: 0, total: 0 };
         }
 
         this.isSyncing = true;
@@ -492,6 +492,7 @@ export class SyncEngine {
                 }
             }
 
+            const syncedCount = trackingDeferred.size;
             debugLog('Sync completed');
 
             if (errors.length === 0) {
@@ -504,6 +505,9 @@ export class SyncEngine {
             if (errors.length > 0) {
                 throw new Error(`Sync completed with ${errors.length} error(s): ${errors[0]}`);
             }
+
+            // Return summary for callers that want to show results
+            return { synced: syncedCount, skipped: skippedCount, errors: errors.length, total: filesToSync.length };
         } finally {
             this.isSyncing = false;
         }
