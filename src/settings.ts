@@ -217,7 +217,7 @@ export class PensioSettingTab extends PluginSettingTab {
      */
     private renderConnectionStatus(containerEl: HTMLElement): void {
         const apiUrl = this.plugin.settings.apiUrl;
-        const hasBothTokens = this.plugin.settings.apiToken && this.plugin.settings.refreshToken;
+        const hasBothTokens = this.plugin.getAccessToken() && this.plugin.getRefreshToken();
 
         // Connected account info (show who we're syncing to)
         const account = this.plugin.accountGuard.getAccount();
@@ -248,13 +248,9 @@ export class PensioSettingTab extends PluginSettingTab {
             .addText(text => {
                 text
                     .setPlaceholder('Enter your access token')
-                    .setValue(this.plugin.settings.apiToken)
+                    .setValue(this.plugin.getAccessToken())
                     .onChange(async (value) => {
-                        this.plugin.settings.apiToken = value.trim();
-                        await this.plugin.saveSettings();
-                        if (this.plugin.settings.apiToken && this.plugin.settings.refreshToken) {
-                            this.plugin.apiClient.updateSettings(this.plugin.settings);
-                        }
+                        await this.plugin.setTokens(value.trim(), this.plugin.getRefreshToken());
                     });
                 text.inputEl.type = 'password';
             });
@@ -266,13 +262,9 @@ export class PensioSettingTab extends PluginSettingTab {
             .addText(text => {
                 text
                     .setPlaceholder('Enter your refresh token')
-                    .setValue(this.plugin.settings.refreshToken)
+                    .setValue(this.plugin.getRefreshToken())
                     .onChange(async (value) => {
-                        this.plugin.settings.refreshToken = value.trim();
-                        await this.plugin.saveSettings();
-                        if (this.plugin.settings.apiToken && this.plugin.settings.refreshToken) {
-                            this.plugin.apiClient.updateSettings(this.plugin.settings);
-                        }
+                        await this.plugin.setTokens(this.plugin.getAccessToken(), value.trim());
                     });
                 text.inputEl.type = 'password';
             });
@@ -304,7 +296,7 @@ export class PensioSettingTab extends PluginSettingTab {
                 button
                     .setButtonText('Test')
                     .onClick(async () => {
-                        if (!this.plugin.settings.apiToken || !this.plugin.settings.refreshToken) {
+                        if (!this.plugin.getAccessToken() || !this.plugin.getRefreshToken()) {
                             new Notice('Please paste both tokens above first');
                             return;
                         }

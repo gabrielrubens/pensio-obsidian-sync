@@ -24,8 +24,6 @@ export const ENTRY_TYPES: { value: string; label: string }[] = [
  */
 export interface PensioSettings {
     apiUrl: string;
-    apiToken: string;
-    refreshToken: string; // Store refresh token for auto-renewal
     deviceId: string;
     autoSync: boolean;
     journalFolder: string; // DEPRECATED — kept for migration from pre-v0.1.4
@@ -40,8 +38,6 @@ export interface PensioSettings {
  */
 export const DEFAULT_SETTINGS: PensioSettings = {
     apiUrl: 'https://www.pensio.app',
-    apiToken: '',
-    refreshToken: '',
     deviceId: '',
     autoSync: true,
     journalFolder: '',  // DEPRECATED
@@ -194,16 +190,6 @@ export interface SyncedFileInfo {
     hash: string;
     /** File modification time at last sync (ms since epoch) */
     mtime: number;
-}
-
-/**
- * Sync queue item
- */
-export interface SyncQueueItem {
-    filePath: string;
-    action: 'create' | 'update' | 'delete';
-    timestamp: number;
-    retryCount: number;
 }
 
 /**

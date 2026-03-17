@@ -3,7 +3,6 @@ import { CreateEntryRequest, CreatePersonRequest, CurrentUserResponse, DEFAULT_S
 describe('PensioSettings', () => {
     it('should have correct default settings', () => {
         expect(DEFAULT_SETTINGS.apiUrl).toBe('https://www.pensio.app');
-        expect(DEFAULT_SETTINGS.apiToken).toBe('');
         expect(DEFAULT_SETTINGS.deviceId).toBe('');
         expect(DEFAULT_SETTINGS.autoSync).toBe(true);
     });

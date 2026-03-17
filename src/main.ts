@@ -13,16 +13,42 @@ export default class PensioPlugin extends Plugin {
     accountGuard: AccountGuard;
     statusBarItem: HTMLElement;
     private _syncState: SyncStateData | null = null;
+    /** In-memory token values (persisted in SecretStorage, never in data.json) */
+    private _accessToken: string = '';
+    private _refreshToken: string = '';
     /** Tracks the token values that were last used, to detect manual changes */
     private _previousTokenFingerprint: string = '';
+
+    private static readonly SECRET_ACCESS_TOKEN = 'pensio-access-token';
+    private static readonly SECRET_REFRESH_TOKEN = 'pensio-refresh-token';
 
     async onload() {
         // Load settings
         await this.loadSettings();
         setDebugMode(this.settings.debugMode);
 
+        // Load tokens from SecretStorage (encrypted at rest)
+        await this.loadTokens();
+
         // Initialize API client
         this.apiClient = new ApiClient(this.settings);
+
+        // Initialize with tokens if available
+        if (this._accessToken && this._refreshToken) {
+            await this.apiClient.initializeTokens(this._accessToken, this._refreshToken);
+        }
+
+        // Wire up token persistence: when tokens refresh, save to SecretStorage
+        this.apiClient.getTokenManager().setOnTokensChanged(async (tokens) => {
+            if (tokens) {
+                this._accessToken = tokens.accessToken;
+                this._refreshToken = tokens.refreshToken;
+            } else {
+                this._accessToken = '';
+                this._refreshToken = '';
+            }
+            await this.saveTokens();
+        });
 
         // Initialize account guard
         this.accountGuard = new AccountGuard();
@@ -54,7 +80,7 @@ export default class PensioPlugin extends Plugin {
         this.registerCommands();
 
         // Start file watcher + initial sync if configured
-        if (this.settings.autoSync && this.settings.apiUrl && this.settings.apiToken) {
+        if (this.settings.autoSync && this.settings.apiUrl && this._accessToken) {
             this.syncEngine.startWatching();
             this.syncEngine.startAutoSync();
         }
@@ -74,6 +100,21 @@ export default class PensioPlugin extends Plugin {
         this._syncState = rawData._syncState || null;
         const settingsData = { ...rawData };
         delete settingsData._syncState;
+
+        // Migrate legacy plaintext tokens → SecretStorage (one-time)
+        if (settingsData.apiToken || settingsData.refreshToken) {
+            debugLog('Migrating plaintext tokens to SecretStorage');
+            this._accessToken = settingsData.apiToken || '';
+            this._refreshToken = settingsData.refreshToken || '';
+            delete settingsData.apiToken;
+            delete settingsData.refreshToken;
+            // Save tokens to SecretStorage and clean data.json in background
+            // (loadTokens below will prefer these in-memory values)
+            setTimeout(async () => {
+                await this.saveTokens();
+                await this.saveData({ ...this.settings, _syncState: this._syncState });
+            }, 0);
+        }
 
         this.settings = Object.assign({}, DEFAULT_SETTINGS, settingsData);
 
@@ -110,7 +151,7 @@ export default class PensioPlugin extends Plugin {
 
         // Restart watcher + auto-sync if enabled
         this.syncEngine.stopWatching();
-        if (this.settings.autoSync && this.settings.apiUrl && this.settings.apiToken) {
+        if (this.settings.autoSync && this.settings.apiUrl && this._accessToken) {
             this.syncEngine.startWatching();
             this.syncEngine.startAutoSync();
         }
@@ -170,7 +211,8 @@ export default class PensioPlugin extends Plugin {
                 new Notice(`Syncing ${file.name}...`);
                 try {
                     if (!await this.verifyAccountBeforeSync()) return;
-                    await this.syncEngine.syncFile(file);
+                    this.syncEngine.markDirty(file.path);
+                    await this.syncEngine.syncAll(false);
                     new Notice('File synced successfully');
                 } catch (error) {
                     new Notice(`Sync failed: ${error.message}`);
@@ -206,8 +248,9 @@ export default class PensioPlugin extends Plugin {
             id: 'logout',
             name: 'Logout (clear API token)',
             callback: async () => {
-                this.settings.apiToken = '';
-                this.settings.refreshToken = '';
+                this._accessToken = '';
+                this._refreshToken = '';
+                await this.saveTokens();
                 this.syncEngine.clearState();
                 this.accountGuard.clearAccount();
                 this._syncState = null;
@@ -246,7 +289,7 @@ export default class PensioPlugin extends Plugin {
      */
     async verifyAccountBeforeSync(): Promise<boolean> {
         // Skip verification if not authenticated
-        if (!this.settings.apiToken || !this.settings.refreshToken) {
+        if (!this._accessToken || !this._refreshToken) {
             return false;
         }
         if (this.apiClient.isAuthInvalidated()) {
@@ -300,10 +343,82 @@ export default class PensioPlugin extends Plugin {
      * storing full tokens again.
      */
     private tokenFingerprint(): string {
-        const access = this.settings.apiToken || '';
-        const refresh = this.settings.refreshToken || '';
+        const access = this._accessToken || '';
+        const refresh = this._refreshToken || '';
         if (!access && !refresh) return '';
         return `${access.substring(0, 16)}:${refresh.substring(0, 16)}`;
+    }
+
+    // ========================================================================
+    // SecretStorage — encrypted token persistence
+    // ========================================================================
+
+    /**
+     * Load tokens from Obsidian's SecretStorage (encrypted at rest).
+     * Called once during onload, after loadSettings (which may migrate legacy tokens).
+     */
+    private async loadTokens(): Promise<void> {
+        // If migration already populated in-memory tokens, skip SecretStorage read
+        if (this._accessToken && this._refreshToken) return;
+
+        try {
+            this._accessToken = this.app.secretStorage.getSecret(PensioPlugin.SECRET_ACCESS_TOKEN) || '';
+            this._refreshToken = this.app.secretStorage.getSecret(PensioPlugin.SECRET_REFRESH_TOKEN) || '';
+        } catch (error) {
+            console.error('Failed to load tokens from SecretStorage:', error);
+        }
+    }
+
+    /**
+     * Save current in-memory tokens to SecretStorage.
+     * Also called by the onTokensChanged callback after refresh.
+     */
+    async saveTokens(): Promise<void> {
+        try {
+            if (this._accessToken) {
+                this.app.secretStorage.setSecret(PensioPlugin.SECRET_ACCESS_TOKEN, this._accessToken);
+            } else {
+                this.app.secretStorage.setSecret(PensioPlugin.SECRET_ACCESS_TOKEN, '');
+            }
+            if (this._refreshToken) {
+                this.app.secretStorage.setSecret(PensioPlugin.SECRET_REFRESH_TOKEN, this._refreshToken);
+            } else {
+                this.app.secretStorage.setSecret(PensioPlugin.SECRET_REFRESH_TOKEN, '');
+            }
+        } catch (error) {
+            console.error('Failed to save tokens to SecretStorage:', error);
+        }
+    }
+
+    /** Public accessors for tokens (used by settings tab) */
+    getAccessToken(): string { return this._accessToken; }
+    getRefreshToken(): string { return this._refreshToken; }
+
+    /**
+     * Set tokens from external source (e.g. settings tab paste).
+     * Persists to SecretStorage and initializes the API client.
+     */
+    async setTokens(accessToken: string, refreshToken: string): Promise<void> {
+        this._accessToken = accessToken;
+        this._refreshToken = refreshToken;
+        await this.saveTokens();
+        if (accessToken && refreshToken) {
+            await this.apiClient.initializeTokens(accessToken, refreshToken);
+        }
+        // Detect change for account guard
+        const currentFingerprint = this.tokenFingerprint();
+        if (this._previousTokenFingerprint &&
+            currentFingerprint &&
+            currentFingerprint !== this._previousTokenFingerprint) {
+            await this.handleTokenChange();
+        }
+        this._previousTokenFingerprint = currentFingerprint;
+        // Restart sync if appropriate
+        this.syncEngine.stopWatching();
+        if (this.settings.autoSync && this.settings.apiUrl && this._accessToken) {
+            this.syncEngine.startWatching();
+            this.syncEngine.startAutoSync();
+        }
     }
 
     /**

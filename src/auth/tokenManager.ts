@@ -1,119 +1,91 @@
-import { debugLog } from '../logger';
-/**
- * Token manager for automatic token refresh
- * 
- * Handles:
- * - Auto-refresh tokens before expiration
- * - Retry failed requests with refreshed tokens
- * - Token validation and expiry checking
- */
-
 import { Notice, requestUrl } from 'obsidian';
-import { TokenData, TokenStorage } from './tokenStorage';
+import { debugLog } from '../logger';
 
+export interface TokenData {
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: number;
+}
+
+/**
+ * Callback invoked whenever tokens change (refresh, login, logout).
+ * Implementor persists the new tokens to data.json.
+ */
+export type OnTokensChanged = (tokens: TokenData | null) => Promise<void>;
+
+/**
+ * Manages JWT token lifecycle: auto-refresh, 401 handling, expiry tracking.
+ *
+ * Tokens are held in memory only. Persistence is handled by the caller
+ * via the onTokensChanged callback (which saves to data.json).
+ */
 export class TokenManager {
-    private storage: TokenStorage;
     private apiUrl: string;
     private deviceId: string;
+    private accessToken: string | null = null;
+    private refreshTokenValue: string | null = null;
+    private expiresAt: number = 0;
     private refreshPromise: Promise<TokenData> | null = null;
     private refreshTimer: NodeJS.Timeout | null = null;
-    /**
-     * True when token refresh has failed with 401 (refresh token invalid).
-     * Prevents repeated refresh attempts and Notice spam until the user
-     * explicitly re-authenticates.
-     */
     private authInvalidated = false;
+    private onTokensChanged: OnTokensChanged | null = null;
 
     constructor(apiUrl: string, deviceId: string = '') {
-        this.storage = new TokenStorage();
         this.apiUrl = apiUrl;
         this.deviceId = deviceId;
     }
 
     /**
-     * Initialize token manager with existing tokens
+     * Set callback for token persistence. Must be called before initialize().
      */
-    async initialize(accessToken: string, refreshToken: string): Promise<void> {
-        // Calculate expiry (access tokens are valid for 24 hours)
-        const expiresAt = Date.now() + (24 * 60 * 60 * 1000);
-
-        const tokens: TokenData = {
-            accessToken,
-            refreshToken,
-            expiresAt
-        };
-
-        // Reset invalidation flag on fresh login
-        this.authInvalidated = false;
-
-        await this.storage.storeTokens(tokens);
-        this.scheduleRefresh(expiresAt);
+    setOnTokensChanged(callback: OnTokensChanged): void {
+        this.onTokensChanged = callback;
     }
 
-    /**
-     * Get current access token, refreshing if necessary.
-     * Returns null (skips refresh) if auth was previously invalidated.
-     */
+    async initialize(accessToken: string, refreshToken: string): Promise<void> {
+        this.accessToken = accessToken;
+        this.refreshTokenValue = refreshToken;
+        this.expiresAt = Date.now() + (24 * 60 * 60 * 1000);
+        this.authInvalidated = false;
+        this.scheduleRefresh(this.expiresAt);
+    }
+
     async getAccessToken(): Promise<string | null> {
-        if (this.authInvalidated) {
-            return null;
-        }
+        if (this.authInvalidated) return null;
+        if (!this.accessToken) return null;
 
-        const tokens = await this.storage.retrieveTokens();
-        if (!tokens) {
-            return null;
-        }
-
-        // Check if token is expired or will expire soon (within 1 hour)
-        const now = Date.now();
+        // Refresh if expiring within 1 hour
         const oneHour = 60 * 60 * 1000;
-
-        if (tokens.expiresAt - now < oneHour) {
+        if (this.expiresAt - Date.now() < oneHour) {
             debugLog('Token expiring soon, refreshing...');
             try {
                 const newTokens = await this.refreshToken();
                 return newTokens.accessToken;
             } catch (error) {
                 console.error('Failed to refresh token:', error);
-                // Return existing token and let the API call fail with 401
-                // This will trigger the refresh in handleUnauthorized
-                return tokens.accessToken;
+                return this.accessToken;
             }
         }
 
-        return tokens.accessToken;
+        return this.accessToken;
     }
 
-    /**
-     * Refresh the access token using the refresh token
-     */
     async refreshToken(): Promise<TokenData> {
-        // If a refresh is already in progress, wait for it
-        if (this.refreshPromise) {
-            return this.refreshPromise;
-        }
+        if (this.refreshPromise) return this.refreshPromise;
 
         this.refreshPromise = this._performRefresh();
-
         try {
-            const newTokens = await this.refreshPromise;
-            return newTokens;
+            return await this.refreshPromise;
         } finally {
             this.refreshPromise = null;
         }
     }
 
-    /**
-     * Actually perform the token refresh API call
-     */
     private async _performRefresh(): Promise<TokenData> {
-        // If auth was already invalidated, don't attempt refresh
         if (this.authInvalidated) {
             throw new Error('Authentication was invalidated — please log in again');
         }
-
-        const tokens = await this.storage.retrieveTokens();
-        if (!tokens || !tokens.refreshToken) {
+        if (!this.refreshTokenValue) {
             throw new Error('No refresh token available');
         }
 
@@ -121,35 +93,37 @@ export class TokenManager {
             const response = await requestUrl({
                 url: `${this.apiUrl}/api/v1/auth/refresh/`,
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    refresh: tokens.refreshToken,
+                    refresh: this.refreshTokenValue,
                     device_id: this.deviceId,
                 })
             });
 
             const data: { access: string; refresh?: string } = response.json;
 
-            // Update stored tokens with new access token
-            // If backend rotates the refresh token, use the new one
             const expiresAt = Date.now() + (24 * 60 * 60 * 1000);
             const newTokens: TokenData = {
                 accessToken: data.access,
-                refreshToken: data.refresh || tokens.refreshToken,
+                refreshToken: data.refresh || this.refreshTokenValue,
                 expiresAt
             };
 
-            await this.storage.storeTokens(newTokens);
+            this.accessToken = newTokens.accessToken;
+            this.refreshTokenValue = newTokens.refreshToken;
+            this.expiresAt = expiresAt;
             this.scheduleRefresh(expiresAt);
+
+            // Notify caller to persist new tokens
+            if (this.onTokensChanged) {
+                await this.onTokensChanged(newTokens);
+            }
 
             debugLog('Token refreshed successfully');
             return newTokens;
         } catch (error) {
             console.error('Token refresh failed:', error);
 
-            // If refresh fails with 401, invalidate auth (refresh token is dead)
             if (error.status === 401) {
                 this.authInvalidated = true;
                 await this.clearTokens();
@@ -160,11 +134,6 @@ export class TokenManager {
         }
     }
 
-    /**
-     * Handle 401 Unauthorized response by attempting to refresh.
-     * Returns null silently if auth was already invalidated (Notice was
-     * already shown once by _performRefresh).
-     */
     async handleUnauthorized(): Promise<TokenData | null> {
         if (this.authInvalidated) {
             debugLog('Auth already invalidated, skipping refresh attempt');
@@ -176,8 +145,6 @@ export class TokenManager {
             return await this.refreshToken();
         } catch (error) {
             console.error('Token refresh on 401 failed:', error);
-            // Don't show another Notice — _performRefresh already showed one
-            // if the refresh token was invalid (401). Just ensure cleanup.
             if (!this.authInvalidated) {
                 this.authInvalidated = true;
                 await this.clearTokens();
@@ -186,20 +153,13 @@ export class TokenManager {
         }
     }
 
-    /**
-     * Schedule automatic token refresh before expiration
-     */
     private scheduleRefresh(expiresAt: number): void {
-        // Clear any existing timer
         if (this.refreshTimer) {
             clearTimeout(this.refreshTimer);
         }
 
-        // Schedule refresh 1 hour before expiration
-        const now = Date.now();
         const oneHour = 60 * 60 * 1000;
-        const refreshAt = expiresAt - oneHour;
-        const delay = refreshAt - now;
+        const delay = expiresAt - oneHour - Date.now();
 
         if (delay > 0) {
             debugLog(`Scheduling token refresh in ${Math.round(delay / 1000 / 60)} minutes`);
@@ -214,7 +174,6 @@ export class TokenManager {
                 }
             }, delay);
         } else {
-            // Token already expired or will expire very soon, refresh immediately
             debugLog('Token expired or expiring very soon, refreshing immediately');
             this.refreshToken().catch(error => {
                 console.error('Immediate refresh failed:', error);
@@ -222,9 +181,6 @@ export class TokenManager {
         }
     }
 
-    /**
-     * Cancel scheduled refresh timer (for plugin unload)
-     */
     cancelRefreshTimer(): void {
         if (this.refreshTimer) {
             clearTimeout(this.refreshTimer);
@@ -232,83 +188,44 @@ export class TokenManager {
         }
     }
 
-    /**
-     * Clear all stored tokens and cancel scheduled refresh
-     */
     async clearTokens(): Promise<void> {
-        if (this.refreshTimer) {
-            clearTimeout(this.refreshTimer);
-            this.refreshTimer = null;
+        this.cancelRefreshTimer();
+        this.accessToken = null;
+        this.refreshTokenValue = null;
+        this.expiresAt = 0;
+        if (this.onTokensChanged) {
+            await this.onTokensChanged(null);
         }
-        await this.storage.clearTokens();
     }
 
-    /**
-     * Check if tokens are available
-     */
     hasTokens(): boolean {
-        return this.storage.hasTokens();
+        return !!this.accessToken && !!this.refreshTokenValue;
     }
 
-    /**
-     * Get token expiration time
-     */
     async getTokenExpiry(): Promise<Date | null> {
-        const tokens = await this.storage.retrieveTokens();
-        if (!tokens) {
-            return null;
-        }
-        return new Date(tokens.expiresAt);
+        if (!this.accessToken) return null;
+        return new Date(this.expiresAt);
     }
 
-    /**
-     * Check if token is expired
-     */
     async isTokenExpired(): Promise<boolean> {
-        const tokens = await this.storage.retrieveTokens();
-        if (!tokens) {
-            return true;
-        }
-        return tokens.expiresAt < Date.now();
+        if (!this.accessToken) return true;
+        return this.expiresAt < Date.now();
     }
 
-    /**
-     * Whether authentication has been invalidated (refresh token rejected).
-     * When true, all API calls should be skipped until the user logs in again.
-     */
     isAuthInvalidated(): boolean {
         return this.authInvalidated;
     }
 
-    /**
-     * Get time until token expires (in milliseconds)
-     */
     async getTimeUntilExpiry(): Promise<number> {
-        const tokens = await this.storage.retrieveTokens();
-        if (!tokens) {
-            return 0;
-        }
-        return Math.max(0, tokens.expiresAt - Date.now());
+        if (!this.accessToken) return 0;
+        return Math.max(0, this.expiresAt - Date.now());
     }
 
-    /**
-     * Update API URL (when settings change)
-     */
     updateApiUrl(apiUrl: string): void {
         this.apiUrl = apiUrl;
     }
 
-    /**
-     * Update device ID (when settings change)
-     */
     updateDeviceId(deviceId: string): void {
         this.deviceId = deviceId;
-    }
-
-    /**
-     * Get storage method info
-     */
-    getStorageMethod(): string {
-        return this.storage.getStorageMethod();
     }
 }
