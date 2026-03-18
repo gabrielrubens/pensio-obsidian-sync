@@ -33,24 +33,18 @@ const TYPE_KEYS = ['type', 'entry_type'];
  * Keys are normalized (lowercase, underscored). Values are the canonical type.
  */
 const ENTRY_TYPE_MAP: Record<string, string> = {
+    // Canonical types
     'daily_journal': 'daily_journal',
+    'prompted_journal': 'prompted_journal',
+    'deep_dive': 'deep_dive',
+    'meeting_note': 'meeting_note',
+    'other': 'other',
+    // Common aliases
     'daily': 'daily_journal',
     'journal': 'daily_journal',
-    'prompted_journal': 'prompted_journal',
     'prompted': 'prompted_journal',
-    'prompt': 'prompted_journal',
-    'deep_dive': 'deep_dive',
     'deep dive': 'deep_dive',
-    'deepdive': 'deep_dive',
-    'meeting_note': 'meeting_note',
     'meeting': 'meeting_note',
-    'other': 'other',
-    // Legacy aliases — remap to canonical types
-    'free_write': 'daily_journal',
-    'freewrite': 'daily_journal',
-    'free': 'daily_journal',
-    'person_note': 'other',
-    'relationship_note': 'other',
 };
 
 /**

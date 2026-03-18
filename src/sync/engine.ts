@@ -254,6 +254,10 @@ export class SyncEngine {
         );
     }
 
+    getTrackedFileCount(): number {
+        return this.syncedFiles.size;
+    }
+
     getState(): SyncStateData {
         const files: Record<string, SyncedFileInfo> = {};
         for (const [path, info] of this.syncedFiles) {

@@ -257,4 +257,18 @@ describe('extractEntryType', () => {
     it('should return null if no type found', () => {
         expect(extractEntryType('title: No Type')).toBeNull();
     });
+
+    it('should map removed legacy aliases to "other"', () => {
+        expect(extractEntryType('type: free_write')).toBe('other');
+        expect(extractEntryType('type: freewrite')).toBe('other');
+        expect(extractEntryType('type: person_note')).toBe('other');
+    });
+
+    it('should handle "journal" alias for daily_journal', () => {
+        expect(extractEntryType('type: journal')).toBe('daily_journal');
+    });
+
+    it('should handle "deep dive" with space', () => {
+        expect(extractEntryType('type: deep dive')).toBe('deep_dive');
+    });
 });

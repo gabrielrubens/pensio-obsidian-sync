@@ -10,7 +10,6 @@ import {
     PensioSettings,
     PersonResponse,
     SyncStatusResponse,
-    TokenResponse,
 } from '../types';
 
 /**
@@ -155,26 +154,6 @@ export class ApiClient {
     // Auth
     // ========================================================================
 
-    async authenticate(email: string, password: string): Promise<TokenResponse> {
-        if (!this.settings.deviceId) {
-            this.settings.deviceId = this.generateDeviceId();
-        }
-
-        const response = await this.request<TokenResponse>(
-            'POST',
-            '/api/v1/auth/token/',
-            {
-                email,
-                password,
-                device_id: this.settings.deviceId,
-                device_name: 'Obsidian',
-            }
-        );
-
-        await this.tokenManager.initialize(response.access, response.refresh);
-        return response;
-    }
-
     async fetchCurrentUser(): Promise<CurrentUserResponse> {
         return await this.request<CurrentUserResponse>('GET', '/api/v1/auth/me/');
     }
@@ -225,10 +204,6 @@ export class ApiClient {
     // ========================================================================
     // Token management
     // ========================================================================
-
-    private generateDeviceId(): string {
-        return `obsidian-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-    }
 
     getTokenManager(): TokenManager {
         return this.tokenManager;

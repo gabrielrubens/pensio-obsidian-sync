@@ -1,4 +1,4 @@
-import { App, FuzzySuggestModal, Notice, PluginSettingTab, Setting, TFolder } from 'obsidian';
+import { App, FuzzySuggestModal, normalizePath, Notice, PluginSettingTab, Setting, TFolder } from 'obsidian';
 import PensioPlugin from './main';
 import { ENTRY_TYPES } from './types';
 
@@ -62,10 +62,9 @@ export class PensioSettingTab extends PluginSettingTab {
 
         // Journal folders (multi-folder with entry type mapping)
         const journalDesc = containerEl.createEl('p', {
-            cls: 'setting-item-description',
+            cls: 'setting-item-description pensio-folder-desc',
             text: 'Map vault folders to Pensio entry types. Each .md file in a folder becomes a journal entry of the mapped type. Frontmatter "type:" overrides the folder mapping.',
         });
-        journalDesc.style.marginBottom = '8px';
 
         // Render each existing mapping
         for (let i = 0; i < this.plugin.settings.journalFolders.length; i++) {
@@ -97,7 +96,7 @@ export class PensioSettingTab extends PluginSettingTab {
                     .setPlaceholder('People')
                     .setValue(this.plugin.settings.peopleFolder)
                     .onChange(async (value) => {
-                        this.plugin.settings.peopleFolder = value.trim();
+                        this.plugin.settings.peopleFolder = normalizePath(value.trim());
                         await this.plugin.saveSettings();
                     });
             })
@@ -173,7 +172,7 @@ export class PensioSettingTab extends PluginSettingTab {
                     .setPlaceholder('Folder path')
                     .setValue(mapping.folder)
                     .onChange(async (value) => {
-                        this.plugin.settings.journalFolders[index].folder = value.trim();
+                        this.plugin.settings.journalFolders[index].folder = normalizePath(value.trim());
                         await this.plugin.saveSettings();
                     });
             })
@@ -227,14 +226,36 @@ export class PensioSettingTab extends PluginSettingTab {
                 .setDesc(`${account.email}`);
         }
 
-        // Token page link
-        if (apiUrl) {
+        // Getting started — shown when not connected
+        if (!hasBothTokens) {
+            const gettingStarted = containerEl.createDiv({ cls: 'pensio-getting-started' });
+            const steps = gettingStarted.createEl('p');
+            steps.appendText('To connect this plugin you need a Pensio account and API tokens.');
+
+            const stepList = gettingStarted.createEl('ol');
+
+            const step1 = stepList.createEl('li');
+            const signupLink = step1.createEl('a', { text: 'Create a free Pensio account', href: `${apiUrl.replace(/\/+$/, '')}/register/` });
+            signupLink.setAttr('target', '_blank');
+            step1.appendText(' (if you don\u2019t have one)');
+
+            const step2 = stepList.createEl('li');
+            step2.appendText('Go to ');
+            const tokenLink = step2.createEl('a', { text: 'Settings \u2192 API tokens', href: `${apiUrl.replace(/\/+$/, '')}/settings/#tokens` });
+            tokenLink.setAttr('target', '_blank');
+            step2.appendText(' and generate tokens');
+
+            const step3 = stepList.createEl('li');
+            step3.appendText('Paste both tokens below');
+        }
+
+        // Token page link (shown when connected, for token regeneration)
+        if (hasBothTokens && apiUrl) {
             new Setting(containerEl)
-                .setName('Get your tokens')
-                .setDesc('Open your Pensio settings page to generate API tokens, then paste them below.')
+                .setName('Get new tokens')
+                .setDesc('Regenerate tokens from your Pensio settings page.')
                 .addButton(button => button
                     .setButtonText('Open token page')
-                    .setCta()
                     .onClick(() => {
                         const tokenUrl = `${apiUrl.replace(/\/+$/, '')}/settings/#tokens`;
                         window.open(tokenUrl);
@@ -282,7 +303,7 @@ export class PensioSettingTab extends PluginSettingTab {
                         : 'Token expired \u2014 will auto-refresh on next sync';
 
                     new Setting(containerEl)
-                        .setName('Status')
+                        .setName('Token status')
                         .setDesc(expiryText);
                 }
             });

@@ -1,16 +1,22 @@
-# Pensio Sync - Obsidian Plugin
+# Pensio Sync — Obsidian Plugin
 
 Sync your Obsidian vault with [Pensio](https://pensio.app) for AI-powered emotional insights and reflections.
 
-> **Network disclosure**: This plugin sends vault content (journal entries and people notes from your configured sync folders) to an external Pensio server over HTTPS. A Pensio account is required. No data is sent until you explicitly connect and configure sync folders. See [Security & Privacy](#security--privacy) for details.
+> **Required disclosures** (per [Obsidian developer policies](https://docs.obsidian.md/Developer+policies)):
+> - **Account required** — A free [Pensio](https://pensio.app) account is needed.
+> - **Network use** — This plugin sends journal content from your configured sync folders to Pensio servers (`pensio.app`) over HTTPS. Data is used for storage, AI-based emotion analysis, and insight generation. No data leaves your device until you explicitly connect and configure folders.
+> - **Privacy** — See [Pensio Privacy Policy](https://pensio.app/privacy/).
 
 ## Features
 
-- 🔄 **Automatic sync** — real-time sync when files change (on by default)
-- 🔐 **Secure** — JWT authentication with automatic token refresh
-- ⚡ **Selective sync** — choose which folders to sync
-- 📊 **Status tracking** — see sync status in status bar
-- 🧠 **Frontmatter aware** — entry type and date extracted from YAML front matter
+- **Automatic sync** — syncs when files change, or on a 5-minute interval
+- **Selective sync** — only configured folders are synced; everything else stays local
+- **Multi-folder mapping** — map different vault folders to different entry types
+- **Frontmatter aware** — entry type and date extracted from YAML front matter
+- **Secure authentication** — JWT tokens with automatic refresh, stored in Obsidian's encrypted SecretStorage
+- **Account safety** — detects account switches and prevents cross-account data leaks
+- **Status bar** — live sync status indicator
+- **Mobile compatible** — works on Obsidian mobile (iOS & Android)
 
 ## Installation
 
@@ -19,31 +25,23 @@ Sync your Obsidian vault with [Pensio](https://pensio.app) for AI-powered emotio
 1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from Community Plugins
 2. In BRAT settings, click **Add Beta plugin**
 3. Enter: `gabrielrubens/pensio-obsidian-sync`
-4. Enable the plugin in Settings → Community Plugins
+4. Enable the plugin in Settings → Community plugins
 
-### Manual installation
+### Manual
 
 1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/gabrielrubens/pensio-obsidian-sync/releases)
 2. Create `.obsidian/plugins/pensio-sync/` in your vault
 3. Copy the downloaded files into that folder
-4. Reload Obsidian
-5. Enable the plugin in Settings → Community Plugins
+4. Reload Obsidian and enable the plugin
 
 ## Setup
 
-1. **Get a Pensio account**
-   - Sign up at [pensio.app](https://pensio.app) or self-host the [Pensio backend](https://github.com/gabrielrubens/pensio)
+1. **Create a Pensio account** at [pensio.app/register](https://pensio.app/register/) (or self-host)
+2. **Get your tokens** — go to [Settings → API tokens](https://pensio.app/settings/#tokens) and generate an access + refresh token pair
+3. **Paste tokens** — open Obsidian Settings → Pensio Sync, paste both tokens, click **Test**
+4. **Configure folders** — map your vault folders to entry types (default: `Journal` → Daily Journal)
 
-2. **Get your tokens**
-   - Open Settings → Pensio Sync
-   - Click **Open token page** to visit your Pensio settings
-   - Copy your **Access Token** and **Refresh Token** and paste them in the plugin
-
-3. **Choose sync folders**
-   - Set your **Journal folder** (default: `Journal`) and **People folder** (default: `People`)
-   - Each `.md` file in the journal folder becomes an entry; each in the people folder becomes a relationship
-
-Auto-sync is on by default. The server URL defaults to `https://www.pensio.app` — self-hosted users can change it under Advanced settings.
+Auto-sync is on by default. Self-hosted users can change the server URL under Advanced.
 
 ## Usage
 
@@ -51,114 +49,102 @@ Auto-sync is on by default. The server URL defaults to `https://www.pensio.app` 
 
 Access via Command Palette (Ctrl/Cmd + P):
 
-- **Sync now** — manually sync all files
-- **Sync current file** — sync only active file
-- **Check sync status** — view sync statistics
-- **Logout** — clear credentials and disconnect
+| Command | Description |
+|---|---|
+| **Sync now** | Incremental sync (only changed files) |
+| **Force sync all files** | Re-check all files (still skips unchanged content) |
+| **Sync current file** | Sync only the active file |
+| **Check sync status** | Show server entries and local tracked files |
+| **Logout** | Clear tokens and sync state |
 
 ### Status bar
 
-The plugin shows sync status in the bottom status bar:
+- ☁️ Idle — ready to sync
+- 🔄 Syncing — in progress
+- ✅ Success — sync completed
+- ⚠️ Error — sync failed (check console for details)
 
-- ☁️ Idle (ready to sync)
-- 🔄 Syncing (in progress)
-- ✅ Success (sync completed)
-- ⚠️ Error (sync failed)
+### Entry types
 
-## Security & Privacy
+Each sync folder maps to an entry type. You can also set the type per-file via frontmatter:
 
-This plugin communicates with an external server (Pensio). Here is exactly what is transmitted and why:
+```yaml
+---
+type: prompted_journal
+date: 2026-03-18
+title: My reflection
+---
+```
 
-| Data sent | Purpose | When |
-|---|---|---|
-| Access & refresh tokens | Authentication (pasted from Pensio settings page) | On connect |
-| Journal entry content | Sync entries for AI analysis | On sync |
-| People note content | Sync relationship notes | On sync |
-| File paths & timestamps | Detect changes, resolve conflicts | On sync |
+Supported types: `daily_journal`, `prompted_journal`, `deep_dive`, `meeting_note`, `other`.
 
-**What is NOT sent**: Files outside your configured sync folders, `.obsidian` config, plugin settings.
+## How it works
 
-- All communication uses HTTPS
-- JWT tokens with automatic rotation (access: 24h, refresh: 90d)
-- Tokens stored via Electron safeStorage when available, localStorage fallback
-- No credentials stored in vault files
-- Max file size: 1MB
+1. **File watching** — the plugin monitors your configured folders for changes
+2. **Content hashing** — unchanged files are skipped (SHA-256 deduplication)
+3. **Bulk upload** — changed files are sent in batches of 50 to the Pensio API
+4. **Backend processing** — Pensio extracts emotions, wikilinks, and generates insights from your entries
+
+Only `.md` files in your configured sync folders are sent. Everything else stays local.
+
+## Security & privacy
+
+| What | Details |
+|---|---|
+| **Transport** | All communication over HTTPS |
+| **Authentication** | JWT access tokens (24h) + refresh tokens (90d) with automatic rotation |
+| **Token storage** | Obsidian SecretStorage (OS-level encrypted keychain) |
+| **Data sent** | Markdown content, file paths, timestamps from configured folders only |
+| **Data NOT sent** | Files outside sync folders, `.obsidian` config, plugin settings, vault structure |
+| **Max file size** | 1 MB per file (larger files are skipped) |
 
 ## Development
 
-### Prerequisites
-
-- Node.js 18+
-- npm
-
-### Setup
-
 ```bash
-npm install
+npm install          # Install dependencies
+npm run build        # Production build (tsc + esbuild)
+npm run dev          # Watch mode
+npm test             # Run tests
 ```
 
-### Build
-
-```bash
-# Development (watch mode)
-npm run dev
-
-# Production
-npm run build
-```
-
-### Test
-
-```bash
-npm test
-npm run test:watch
-npm run test:coverage
-```
-
-### Test in Obsidian
-
-1. Build the plugin
-2. Copy `main.js`, `manifest.json`, `styles.css` to your test vault's `.obsidian/plugins/pensio-sync/`
-3. Reload Obsidian
-
-## Architecture
+### Architecture
 
 ```
 src/
-├── main.ts              # Plugin entry point
-├── settings.ts          # Settings UI
+├── main.ts              # Plugin entry point, settings, token persistence
+├── settings.ts          # Settings UI tab
 ├── types.ts             # TypeScript types & defaults
-├── logger.ts            # Debug logging utility
+├── logger.ts            # Debug logging (gated behind settings.debugMode)
 ├── api/
-│   └── client.ts        # API client (HTTP requests)
+│   └── client.ts        # HTTP client (requestUrl, JWT auth, bulk sync)
 ├── auth/
-│   ├── tokenManager.ts  # JWT token lifecycle
-│   └── tokenStorage.ts  # Secure token persistence
+│   ├── tokenManager.ts  # JWT lifecycle (refresh scheduling, 401 handling)
+│   └── accountGuard.ts  # Cross-account safety (prevents data leaks)
 └── sync/
-    ├── engine.ts        # Sync engine (diff, upload)
-    └── parser.ts        # Markdown/frontmatter parser
+    ├── engine.ts        # Sync engine (file watching, batching, state)
+    ├── parser.ts        # Frontmatter parser (title, date, type)
+    └── hash.ts          # SHA-256 content hashing
 ```
 
 ## Troubleshooting
 
 ### "Connection failed"
-- Check server URL is correct (include `https://`)
-- Verify credentials are valid
-- Check network connection
-
-### "File too large"
-- Files over 1MB are skipped
-- Split large files into smaller ones
+- Verify the server URL includes `https://`
+- Regenerate tokens from your Pensio settings page
+- Check network connectivity
 
 ### Files not syncing
-- Check file is in the configured Journal or People folder
-- Auto-sync is on by default — use "Sync now" command for manual sync
-- Enable **Debug mode** in Advanced settings for detailed logs
+- Confirm the file is inside a configured sync folder
+- Use **Sync now** or **Force sync all files** from the command palette
+- Enable **Debug mode** in Advanced settings for detailed console logs
+
+### "File too large"
+- Files over 1 MB are skipped — split into smaller files
 
 ## Support
 
-- [Issues](https://github.com/gabrielrubens/pensio-obsidian-sync/issues)
-- [Pensio Documentation](https://github.com/gabrielrubens/pensio)
+- [GitHub Issues](https://github.com/gabrielrubens/pensio-obsidian-sync/issues)
+- [Pensio](https://pensio.app)
 
 ## License
 

@@ -118,14 +118,7 @@ export default class PensioPlugin extends Plugin {
 
         this.settings = Object.assign({}, DEFAULT_SETTINGS, settingsData);
 
-        // Migrate legacy journalFolder → journalFolders (pre-v0.1.4)
-        if (this.settings.journalFolder && (!this.settings.journalFolders || this.settings.journalFolders.length === 0)) {
-            this.settings.journalFolders = [
-                { folder: this.settings.journalFolder, entryType: 'daily_journal', label: 'Daily Journal' },
-            ];
-            this.settings.journalFolder = '';
-            await this.saveData({ ...this.settings, _syncState: this._syncState });
-        }
+
     }
 
     async saveSettings() {
@@ -230,11 +223,11 @@ export default class PensioPlugin extends Plugin {
                     const status = await this.apiClient.getSyncStatus();
                     const account = this.accountGuard.getAccount();
                     const accountLine = account ? `Account: ${account.email}\n` : '';
+                    const trackedFiles = this.syncEngine.getTrackedFileCount();
                     new Notice(
                         `${accountLine}` +
-                        `Total entries: ${status.total_entries}\n` +
-                        `Conflicts: ${status.conflict_count}\n` +
-                        `Pending: ${status.pending_changes}`
+                        `Server entries: ${status.total_entries}\n` +
+                        `Local tracked files: ${trackedFiles}`
                     );
                 } catch (error) {
                     new Notice(`Failed to get status: ${error.message}`);

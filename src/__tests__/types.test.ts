@@ -11,7 +11,6 @@ describe('PensioSettings', () => {
         expect(DEFAULT_SETTINGS.journalFolders).toHaveLength(1);
         expect(DEFAULT_SETTINGS.journalFolders[0].folder).toBe('Journal');
         expect(DEFAULT_SETTINGS.journalFolders[0].entryType).toBe('daily_journal');
-        expect(DEFAULT_SETTINGS.journalFolder).toBe('');  // deprecated
         expect(DEFAULT_SETTINGS.peopleFolder).toBe('People');
     });
 

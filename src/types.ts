@@ -26,7 +26,6 @@ export interface PensioSettings {
     apiUrl: string;
     deviceId: string;
     autoSync: boolean;
-    journalFolder: string; // DEPRECATED — kept for migration from pre-v0.1.4
     journalFolders: JournalFolderMapping[]; // folder-to-type mappings
     peopleFolder: string; // folder for people notes
     enableMirrorDelete: boolean; // delete server entries not found locally
@@ -40,7 +39,6 @@ export const DEFAULT_SETTINGS: PensioSettings = {
     apiUrl: 'https://www.pensio.app',
     deviceId: '',
     autoSync: true,
-    journalFolder: '',  // DEPRECATED
     journalFolders: [
         { folder: 'Journal', entryType: 'daily_journal', label: 'Daily Journal' },
     ],
@@ -52,13 +50,6 @@ export const DEFAULT_SETTINGS: PensioSettings = {
 /**
  * API response types
  */
-
-export interface TokenResponse {
-    access: string;
-    refresh: string;
-    device_id: string;
-    device_name: string;
-}
 
 /**
  * Response from GET /api/v1/auth/me/
@@ -73,8 +64,6 @@ export interface CurrentUserResponse {
 export interface SyncStatusResponse {
     last_sync: string | null;
     total_entries: number;
-    pending_changes: number;
-    conflict_count: number;
 }
 
 export interface EntryResponse {
@@ -133,10 +122,6 @@ export interface CreatePersonRequest {
     from_locations: string[];
     lived_in: string[];
     metadata: Record<string, any>;
-}
-
-export interface UpdateEntryRequest extends CreateEntryRequest {
-    // Same as create, file_hash is read-only
 }
 
 /**
