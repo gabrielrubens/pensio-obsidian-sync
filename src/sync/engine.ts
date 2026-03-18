@@ -563,6 +563,7 @@ export class SyncEngine {
             const serverEntries = await this.apiClient.listEntries();
             for (const entry of serverEntries) {
                 if (!entry.file_path) continue;
+                if (entry.source !== 'obsidian_plugin') continue;
                 if (!localPaths.has(entry.file_path)) {
                     debugLog(`Deleting entry not in vault: ${entry.file_path}`);
                     await this.apiClient.deleteEntry(entry.id);
@@ -571,7 +572,9 @@ export class SyncEngine {
 
             const serverPeople = await this.apiClient.listPeople();
             for (const person of serverPeople) {
-                if (person.person_note_path && !localPaths.has(person.person_note_path)) {
+                if (!person.person_note_path) continue;
+                if (person.source !== 'obsidian_plugin') continue;
+                if (!localPaths.has(person.person_note_path)) {
                     debugLog(`Deleting person not in vault: ${person.person_note_path}`);
                     await this.apiClient.deletePerson(person.id);
                 }
