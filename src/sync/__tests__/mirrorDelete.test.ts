@@ -63,7 +63,7 @@ describe('Mirror Delete Safety', () => {
         };
 
         settings = {
-            apiUrl: 'https://www.pensio.app',
+            apiUrl: 'https://pensio.app',
             deviceId: 'test',
             autoSync: false,
             journalFolders: [{ folder: 'Journal' }],

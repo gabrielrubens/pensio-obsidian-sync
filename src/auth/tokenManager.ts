@@ -109,8 +109,10 @@ export class TokenManager {
         }
 
         try {
+            // Normalize: fallback to default if empty, strip www. to avoid Cloudflare 301 redirect
+            const baseUrl = (this.apiUrl || 'https://pensio.app').replace('://www.', '://');
             const response = await requestUrl({
-                url: `${this.apiUrl}/api/v1/auth/refresh/`,
+                url: `${baseUrl}/api/v1/auth/refresh/`,
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

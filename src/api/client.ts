@@ -60,7 +60,9 @@ export class ApiClient {
             throw err;
         }
 
-        const url = `${this.settings.apiUrl}${endpoint}`;
+        // Normalize: fallback to default if empty, strip www. to avoid Cloudflare 301 redirect
+        const baseUrl = (this.settings.apiUrl || 'https://pensio.app').replace('://www.', '://');
+        const url = `${baseUrl}${endpoint}`;
 
         const options: RequestUrlParam = {
             url,

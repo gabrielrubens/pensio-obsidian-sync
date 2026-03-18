@@ -147,7 +147,7 @@ export class PensioSettingTab extends PluginSettingTab {
             .setName('Server URL')
             .setDesc('For development or testing only')
             .addText(text => text
-                .setPlaceholder('https://www.pensio.app')
+                .setPlaceholder('https://pensio.app')
                 .setValue(this.plugin.settings.apiUrl)
                 .onChange(async (value) => {
                     this.plugin.settings.apiUrl = value.trim();
@@ -248,7 +248,7 @@ export class PensioSettingTab extends PluginSettingTab {
      * - Connected: account card with email, action buttons, token management
      */
     private renderConnectionStatus(containerEl: HTMLElement): void {
-        const apiUrl = this.plugin.settings.apiUrl.replace(/\/+$/, '');
+        const apiUrl = (this.plugin.settings.apiUrl || 'https://pensio.app').replace(/\/+$/, '');
         const hasBothTokens = this.plugin.getAccessToken() && this.plugin.getRefreshToken();
         const account = this.plugin.accountGuard.getAccount();
 

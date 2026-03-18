@@ -23,7 +23,7 @@ export interface PensioSettings {
  * Default plugin settings
  */
 export const DEFAULT_SETTINGS: PensioSettings = {
-    apiUrl: 'https://www.pensio.app',
+    apiUrl: 'https://pensio.app',
     deviceId: '',
     autoSync: true,
     journalFolders: [
