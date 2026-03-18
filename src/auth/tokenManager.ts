@@ -8,6 +8,25 @@ export interface TokenData {
 }
 
 /**
+ * Extract expiration timestamp from a JWT access token.
+ * Returns milliseconds since epoch, or null if parsing fails.
+ */
+function parseJwtExpiry(token: string): number | null {
+    try {
+        const parts = token.split('.');
+        if (parts.length !== 3) return null;
+        // Base64url decode the payload
+        const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+        if (typeof payload.exp === 'number') {
+            return payload.exp * 1000; // Convert seconds to milliseconds
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Callback invoked whenever tokens change (refresh, login, logout).
  * Implementor persists the new tokens to data.json.
  */
@@ -45,7 +64,7 @@ export class TokenManager {
     async initialize(accessToken: string, refreshToken: string): Promise<void> {
         this.accessToken = accessToken;
         this.refreshTokenValue = refreshToken;
-        this.expiresAt = Date.now() + (24 * 60 * 60 * 1000);
+        this.expiresAt = parseJwtExpiry(accessToken) ?? Date.now() + (30 * 60 * 1000);
         this.authInvalidated = false;
         this.scheduleRefresh(this.expiresAt);
     }
@@ -54,9 +73,9 @@ export class TokenManager {
         if (this.authInvalidated) return null;
         if (!this.accessToken) return null;
 
-        // Refresh if expiring within 1 hour
-        const oneHour = 60 * 60 * 1000;
-        if (this.expiresAt - Date.now() < oneHour) {
+        // Refresh if less than 2 minutes remaining
+        const buffer = 2 * 60 * 1000;
+        if (this.expiresAt - Date.now() < buffer) {
             debugLog('Token expiring soon, refreshing...');
             try {
                 const newTokens = await this.refreshToken();
@@ -102,7 +121,7 @@ export class TokenManager {
 
             const data: { access: string; refresh?: string } = response.json;
 
-            const expiresAt = Date.now() + (24 * 60 * 60 * 1000);
+            const expiresAt = parseJwtExpiry(data.access) ?? Date.now() + (30 * 60 * 1000);
             const newTokens: TokenData = {
                 accessToken: data.access,
                 refreshToken: data.refresh || this.refreshTokenValue,
@@ -158,8 +177,9 @@ export class TokenManager {
             clearTimeout(this.refreshTimer);
         }
 
-        const oneHour = 60 * 60 * 1000;
-        const delay = expiresAt - oneHour - Date.now();
+        // Refresh 2 minutes before expiry
+        const buffer = 2 * 60 * 1000;
+        const delay = expiresAt - buffer - Date.now();
 
         if (delay > 0) {
             debugLog(`Scheduling token refresh in ${Math.round(delay / 1000 / 60)} minutes`);
