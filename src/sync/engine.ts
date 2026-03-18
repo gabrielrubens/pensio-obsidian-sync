@@ -216,13 +216,6 @@ export class SyncEngine {
             return 'person';
         }
 
-        for (const mapping of this.settings.journalFolders) {
-            if (mapping.folder.trim().length > 0 &&
-                filePath.startsWith(mapping.folder + '/')) {
-                return mapping.entryType;
-            }
-        }
-
         return 'daily_journal';
     }
 

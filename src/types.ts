@@ -1,23 +1,10 @@
 /**
- * Maps a vault folder to a Pensio entry type.
- * Each mapping tells the sync engine: "files in this folder are this type."
+ * Maps a vault folder for syncing.
+ * All entries default to daily_journal; use frontmatter type: to override per-file.
  */
 export interface JournalFolderMapping {
     folder: string;
-    entryType: string;  // matches JournalEntry.EntryType on backend
-    label: string;      // human-readable label shown in settings
 }
-
-/**
- * Available entry types (mirrors backend JournalEntry.EntryType)
- */
-export const ENTRY_TYPES: { value: string; label: string }[] = [
-    { value: 'daily_journal', label: 'Daily Journal' },
-    { value: 'prompted_journal', label: 'Prompted Journal' },
-    { value: 'deep_dive', label: 'Deep Dive' },
-    { value: 'meeting_note', label: 'Meeting Note' },
-    { value: 'other', label: 'Other' },
-];
 
 /**
  * Plugin settings interface
@@ -40,7 +27,7 @@ export const DEFAULT_SETTINGS: PensioSettings = {
     deviceId: '',
     autoSync: true,
     journalFolders: [
-        { folder: 'Journal', entryType: 'daily_journal', label: 'Daily Journal' },
+        { folder: 'Journal' },
     ],
     peopleFolder: 'People',
     enableMirrorDelete: false,

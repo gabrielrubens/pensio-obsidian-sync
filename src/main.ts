@@ -118,7 +118,13 @@ export default class PensioPlugin extends Plugin {
 
         this.settings = Object.assign({}, DEFAULT_SETTINGS, settingsData);
 
-
+        // Migrate old folder mappings that had entryType/label fields (pre-0.3.0)
+        if (this.settings.journalFolders?.length > 0 &&
+            (this.settings.journalFolders[0] as any).entryType !== undefined) {
+            this.settings.journalFolders = this.settings.journalFolders.map(
+                (m: any) => ({ folder: m.folder })
+            );
+        }
     }
 
     async saveSettings() {

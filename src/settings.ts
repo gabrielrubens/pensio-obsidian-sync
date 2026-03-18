@@ -1,6 +1,5 @@
 import { App, FuzzySuggestModal, normalizePath, Notice, PluginSettingTab, Setting, TFolder } from 'obsidian';
 import PensioPlugin from './main';
-import { ENTRY_TYPES } from './types';
 
 /**
  * Folder suggest modal for selecting folders
@@ -63,7 +62,7 @@ export class PensioSettingTab extends PluginSettingTab {
         // Journal folders (multi-folder with entry type mapping)
         const journalDesc = containerEl.createEl('p', {
             cls: 'setting-item-description pensio-folder-desc',
-            text: 'Map vault folders to Pensio entry types. Each .md file in a folder becomes a journal entry of the mapped type. Frontmatter "type:" overrides the folder mapping.',
+            text: 'Add folders containing journal files. All .md files sync as Daily Journal entries. Use frontmatter "type:" to override per file.',
         });
 
         // Render each existing mapping
@@ -78,8 +77,6 @@ export class PensioSettingTab extends PluginSettingTab {
                 .onClick(async () => {
                     this.plugin.settings.journalFolders.push({
                         folder: '',
-                        entryType: 'daily_journal',
-                        label: 'Daily Journal',
                     });
                     await this.plugin.saveSettings();
                     this.display();
@@ -160,7 +157,7 @@ export class PensioSettingTab extends PluginSettingTab {
 
     /**
      * Render a single journal folder mapping row.
-     * Shows: [folder text + browse] [entry type dropdown] [remove button]
+     * Shows: [folder text + browse] [remove button]
      */
     private renderFolderMapping(containerEl: HTMLElement, index: number): void {
         const mapping = this.plugin.settings.journalFolders[index];
@@ -184,19 +181,7 @@ export class PensioSettingTab extends PluginSettingTab {
                         await this.plugin.saveSettings();
                         this.display();
                     }).open();
-                }))
-            .addDropdown(dropdown => {
-                for (const type of ENTRY_TYPES) {
-                    dropdown.addOption(type.value, type.label);
-                }
-                dropdown.setValue(mapping.entryType);
-                dropdown.onChange(async (value) => {
-                    this.plugin.settings.journalFolders[index].entryType = value;
-                    const matched = ENTRY_TYPES.find(t => t.value === value);
-                    this.plugin.settings.journalFolders[index].label = matched?.label || value;
-                    await this.plugin.saveSettings();
-                });
-            });
+                }));
 
         // Only show remove button if there's more than one folder
         if (this.plugin.settings.journalFolders.length > 1) {

@@ -10,8 +10,12 @@ describe('PensioSettings', () => {
     it('should have journal folders with default mapping', () => {
         expect(DEFAULT_SETTINGS.journalFolders).toHaveLength(1);
         expect(DEFAULT_SETTINGS.journalFolders[0].folder).toBe('Journal');
-        expect(DEFAULT_SETTINGS.journalFolders[0].entryType).toBe('daily_journal');
         expect(DEFAULT_SETTINGS.peopleFolder).toBe('People');
+    });
+
+    it('should not have entryType or label on folder mapping', () => {
+        expect((DEFAULT_SETTINGS.journalFolders[0] as any).entryType).toBeUndefined();
+        expect((DEFAULT_SETTINGS.journalFolders[0] as any).label).toBeUndefined();
     });
 
     it('should not have deviceName field', () => {
