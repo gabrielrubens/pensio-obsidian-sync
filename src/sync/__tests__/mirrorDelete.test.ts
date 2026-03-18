@@ -1,5 +1,5 @@
+import { EntryResponse, PensioSettings, PersonResponse } from '../../types';
 import { SyncEngine } from '../engine';
-import { PensioSettings, EntryResponse, PersonResponse } from '../../types';
 
 // Mock obsidian module
 jest.mock('obsidian');
