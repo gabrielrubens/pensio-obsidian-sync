@@ -7,25 +7,36 @@ Sync your Obsidian vault with [Pensio](https://pensio.app) for AI-powered emotio
 > - **Network use** — This plugin sends journal content from your configured sync folders to Pensio servers (`pensio.app`) over HTTPS. Data is used for storage, AI-based emotion analysis, and insight generation. No data leaves your device until you explicitly connect and configure folders.
 > - **Privacy** — See [Pensio Privacy Policy](https://pensio.app/privacy/).
 
+## What is Pensio?
+
+**[Pensio](https://pensio.app)** is an AI-powered journaling platform. Write naturally — Pensio automatically extracts 60+ emotions, generates weekly & monthly insights, tracks relationships mentioned in your writing, and provides an AI advisor (Explore) that can answer questions about your entire journal history.
+
+This plugin connects your Obsidian vault to Pensio so you can keep writing in your favorite editor while Pensio adds the intelligence layer on top.
+
 ## Features
 
 - **Automatic sync** — syncs when files change, or on a 5-minute interval
 - **Selective sync** — only configured folders are synced; everything else stays local
-- **Multi-folder mapping** — map different vault folders to different entry types
+- **Multi-folder support** — map multiple vault folders for sync
 - **Frontmatter aware** — entry type and date extracted from YAML front matter
 - **Secure authentication** — JWT tokens with automatic refresh, stored in Obsidian's encrypted SecretStorage
 - **Account safety** — detects account switches and prevents cross-account data leaks
-- **Status bar** — live sync status indicator
+- **Mirror delete** — entries removed from your vault are removed from Pensio (only plugin-created entries)
+- **Status bar** — live sync status with tracked file count
 - **Mobile compatible** — works on Obsidian mobile (iOS & Android)
 
 ## Installation
 
-### BRAT (recommended for beta)
+### BRAT (recommended)
 
 1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from Community Plugins
 2. In BRAT settings, click **Add Beta plugin**
 3. Enter: `gabrielrubens/pensio-obsidian-sync`
 4. Enable the plugin in Settings → Community plugins
+
+### Community Plugins
+
+*Available soon* — Pensio Sync will be submitted to the Obsidian Community Plugins directory.
 
 ### Manual
 
@@ -36,12 +47,12 @@ Sync your Obsidian vault with [Pensio](https://pensio.app) for AI-powered emotio
 
 ## Setup
 
-1. **Create a Pensio account** at [pensio.app/register](https://pensio.app/register/) (or self-host)
+1. **Create a Pensio account** at [pensio.app/register](https://pensio.app/register/)
 2. **Get your tokens** — go to [Settings → API tokens](https://pensio.app/settings/#tokens) and generate an access + refresh token pair
-3. **Paste tokens** — open Obsidian Settings → Pensio Sync, paste both tokens, click **Test**
-4. **Configure folders** — map your vault folders to entry types (default: `Journal` → Daily Journal)
+3. **Paste tokens** — open Obsidian Settings → Pensio Sync, paste both tokens, click **Test Connection**
+4. **Configure folders** — add your vault folders to sync (default: `Journal`)
 
-Auto-sync is on by default. Self-hosted users can change the server URL under Advanced.
+Auto-sync is on by default. Entries sync as you write.
 
 ## Usage
 
@@ -59,24 +70,39 @@ Access via Command Palette (Ctrl/Cmd + P):
 
 ### Status bar
 
-- ☁️ Idle — ready to sync
+- ☁️ Idle — ready to sync (shows tracked file count)
 - 🔄 Syncing — in progress
-- ✅ Success — sync completed
+- ✅ Success — sync completed (shows files synced)
 - ⚠️ Error — sync failed (check console for details)
 
-### Entry types
+### Frontmatter
 
-Each sync folder maps to an entry type. You can also set the type per-file via frontmatter:
+The plugin reads YAML front matter to determine entry type, date, and title.
+
+**Entry type** — recognized keys: `type`, `entry_type`. Frontmatter type overrides the default folder type.
+
+| Frontmatter value | Maps to |
+|---|---|
+| `daily_journal`, `daily`, `journal` | Daily Journal |
+| `prompted_journal`, `prompted` | Prompted Journal |
+| `deep_dive`, `deep dive` | Deep Dive |
+| `meeting_note`, `meeting` | Meeting Note |
+| `other` | Other |
+| *(anything else)* | Other |
+
+**Date** — recognized keys (in priority order): `date`, `created`, `created_at`, `entry_date`. Falls back to file modification time if not present.
+
+**Title** — extracted from the `title` frontmatter key, falling back to the filename.
+
+Example:
 
 ```yaml
 ---
-type: prompted_journal
-date: 2026-03-18
-title: My reflection
+type: deep_dive
+date: 2025-03-18
+title: My reflection on change
 ---
 ```
-
-Supported types: `daily_journal`, `prompted_journal`, `deep_dive`, `meeting_note`, `other`.
 
 ## How it works
 
@@ -86,6 +112,18 @@ Supported types: `daily_journal`, `prompted_journal`, `deep_dive`, `meeting_note
 4. **Backend processing** — Pensio extracts emotions, wikilinks, and generates insights from your entries
 
 Only `.md` files in your configured sync folders are sent. Everything else stays local.
+
+## What you get on Pensio
+
+Once your entries sync, Pensio processes them automatically:
+
+- **60+ emotions extracted** — each entry is analyzed for emotional content
+- **Weekly & monthly insights** — AI-generated reflections on patterns in your writing
+- **Relationship profiles** — people mentioned via `[[wikilinks]]` are tracked and profiled
+- **Explore AI** — ask questions about your entire journal history and get answers grounded in your entries
+- **Constellation** — visual map of how your entries connect through themes, emotions, and people
+
+All of this happens on the web — your markdown files in Obsidian stay untouched.
 
 ## Security & privacy
 
@@ -97,6 +135,10 @@ Only `.md` files in your configured sync folders are sent. Everything else stays
 | **Data sent** | Markdown content, file paths, timestamps from configured folders only |
 | **Data NOT sent** | Files outside sync folders, `.obsidian` config, plugin settings, vault structure |
 | **Max file size** | 1 MB per file (larger files are skipped) |
+
+## Documentation
+
+For a full overview of the plugin and Pensio's features, see the [Obsidian Sync feature page](https://pensio.app/features/obsidian-sync/).
 
 ## Development
 
