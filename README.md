@@ -21,6 +21,7 @@ This plugin connects your Obsidian vault to Pensio so you can keep writing in yo
 - **Frontmatter aware** — entry type and date extracted from YAML front matter
 - **Secure authentication** — JWT tokens with automatic refresh, stored in Obsidian's encrypted SecretStorage
 - **Account safety** — detects account switches and prevents cross-account data leaks
+- **People folder sync** — dedicated folder for relationship notes, synced as Pensio relationship profiles
 - **Mirror delete** — entries removed from your vault are removed from Pensio (only plugin-created entries)
 - **Status bar** — live sync status with tracked file count
 - **Mobile compatible** — works on Obsidian mobile (iOS & Android)
@@ -113,15 +114,34 @@ title: My reflection on change
 
 Only `.md` files in your configured sync folders are sent. Everything else stays local.
 
+## People folder
+
+Besides journal entries, the plugin can sync **relationship notes** from a dedicated People folder (default: `People/`).
+
+Create a markdown file per person:
+
+```
+People/
+├── Sarah.md
+├── David.md
+└── Mom.md
+```
+
+Each file becomes a [relationship profile](https://pensio.app/features/relationships/) on Pensio. The person's name is taken from the `title` frontmatter key, or the filename if not set. You can add any notes about the person in the file body.
+
+When you mention someone in a journal entry using `[[wikilinks]]` (e.g., `Had lunch with [[Sarah]]`), Pensio automatically links the mention to their relationship profile — whether the profile was created from the People folder or from a wikilink.
+
+Configure the People folder path in Settings → Pensio Sync → Advanced. Set it to empty to disable people sync.
+
 ## What you get on Pensio
 
 Once your entries sync, Pensio processes them automatically:
 
-- **60+ emotions extracted** — each entry is analyzed for emotional content
-- **Weekly & monthly insights** — AI-generated reflections on patterns in your writing
-- **Relationship profiles** — people mentioned via `[[wikilinks]]` are tracked and profiled
-- **Explore AI** — ask questions about your entire journal history and get answers grounded in your entries
-- **Constellation** — visual map of how your entries connect through themes, emotions, and people
+- [**60+ emotions extracted**](https://pensio.app/features/emotion-tracking/) — each entry is analyzed for emotional content
+- [**Weekly & monthly insights**](https://pensio.app/features/insights/) — AI-generated reflections on patterns in your writing
+- [**Relationship profiles**](https://pensio.app/features/relationships/) — people mentioned via `[[wikilinks]]` are tracked and profiled
+- [**Explore AI**](https://pensio.app/features/explore/) — ask questions about your entire journal history and get answers grounded in your entries
+- [**Constellation**](https://pensio.app/features/constellation/) — visual map of how your entries connect through themes, emotions, and people
 
 All of this happens on the web — your markdown files in Obsidian stay untouched.
 
