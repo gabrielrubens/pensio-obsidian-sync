@@ -1,14 +1,96 @@
 /* Pensio Sync Plugin Styles */
 
-.pensio-folder-desc {
-    margin-bottom: 8px;
+/* ── Branding header ── */
+.pensio-branding {
+    margin-bottom: var(--size-4-4);
+    padding: var(--size-4-4);
+    border-radius: var(--radius-m);
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
 }
 
+.pensio-branding-title {
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-1);
+    margin-bottom: var(--size-2-2);
+}
+
+.pensio-branding-icon {
+    font-size: var(--font-ui-medium);
+    color: var(--text-accent);
+}
+
+.pensio-branding-name {
+    font-size: var(--font-ui-large);
+    font-weight: var(--font-semibold);
+    color: var(--text-normal);
+    letter-spacing: 0.02em;
+}
+
+.pensio-branding-tagline {
+    margin: 0 0 var(--size-2-3) 0;
+    color: var(--text-muted);
+    font-size: var(--font-ui-small);
+    line-height: 1.5;
+}
+
+.pensio-branding-link {
+    color: var(--text-accent);
+    font-size: var(--font-ui-small);
+    text-decoration: none;
+}
+
+.pensio-branding-link:hover {
+    text-decoration: underline;
+}
+
+/* ── Account card (connected / unverified states) ── */
+.pensio-account-card {
+    margin-bottom: var(--size-4-3);
+    padding: var(--size-4-3);
+    border-radius: var(--radius-s);
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.pensio-account-status {
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-2);
+}
+
+.pensio-status-dot {
+    font-size: var(--font-ui-medium);
+    line-height: 1;
+}
+
+.pensio-status-connected {
+    color: var(--text-success);
+}
+
+.pensio-status-pending {
+    color: var(--text-warning);
+}
+
+.pensio-account-email {
+    font-weight: var(--font-medium);
+    color: var(--text-normal);
+}
+
+.pensio-token-status {
+    margin: var(--size-2-2) 0 0 0;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+}
+
+/* ── Getting started (disconnected onboarding) ── */
 .pensio-getting-started {
     margin-bottom: var(--size-4-4);
     padding: var(--size-4-3);
     border-radius: var(--radius-s);
     background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
 }
 
 .pensio-getting-started p {
@@ -16,6 +98,21 @@
     color: var(--text-muted);
 }
 
+.pensio-getting-started ol {
+    padding-left: var(--size-4-6);
+    margin: var(--size-2-3) 0;
+}
+
+.pensio-getting-started li {
+    margin-bottom: var(--size-2-2);
+    color: var(--text-muted);
+}
+
 .pensio-getting-started a {
     color: var(--text-accent);
+}
+
+/* ── Folder description ── */
+.pensio-folder-desc {
+    margin-bottom: 8px;
 }

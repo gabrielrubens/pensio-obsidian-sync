@@ -162,12 +162,17 @@ export default class PensioPlugin extends Plugin {
             id: 'sync-now',
             name: 'Sync now',
             callback: async () => {
-                new Notice('Starting incremental sync...');
+                this.updateStatusBar('syncing');
                 try {
-                    if (!await this.verifyAccountBeforeSync()) return;
+                    if (!await this.verifyAccountBeforeSync()) {
+                        this.updateStatusBar('idle');
+                        return;
+                    }
                     const result = await this.syncEngine.syncAll(false);
+                    this.updateStatusBar('success', `${result.synced} synced`);
                     new Notice(`Sync done: ${result.synced} synced, ${result.skipped} unchanged, ${result.total} total files`);
                 } catch (error) {
+                    this.updateStatusBar('error');
                     new Notice(`Sync failed: ${error.message}`);
                     console.error('Sync error:', error);
                 }
@@ -179,12 +184,17 @@ export default class PensioPlugin extends Plugin {
             id: 'force-sync-all',
             name: 'Force sync all files',
             callback: async () => {
-                new Notice('Starting force sync (all files)...');
+                this.updateStatusBar('syncing');
                 try {
-                    if (!await this.verifyAccountBeforeSync()) return;
+                    if (!await this.verifyAccountBeforeSync()) {
+                        this.updateStatusBar('idle');
+                        return;
+                    }
                     const result = await this.syncEngine.syncAll(true);
+                    this.updateStatusBar('success', `${result.synced} synced`);
                     new Notice(`Force sync done: ${result.synced} synced, ${result.skipped} unchanged, ${result.total} total files`);
                 } catch (error) {
+                    this.updateStatusBar('error');
                     new Notice(`Sync failed: ${error.message}`);
                     console.error('Sync error:', error);
                 }
@@ -207,13 +217,18 @@ export default class PensioPlugin extends Plugin {
                     return;
                 }
 
-                new Notice(`Syncing ${file.name}...`);
+                this.updateStatusBar('syncing');
                 try {
-                    if (!await this.verifyAccountBeforeSync()) return;
+                    if (!await this.verifyAccountBeforeSync()) {
+                        this.updateStatusBar('idle');
+                        return;
+                    }
                     this.syncEngine.markDirty(file.path);
                     const result = await this.syncEngine.syncAll(false);
+                    this.updateStatusBar('success', `${file.name} synced`);
                     new Notice(`File sync done: ${result.synced} synced`);
                 } catch (error) {
+                    this.updateStatusBar('error');
                     new Notice(`Sync failed: ${error.message}`);
                     console.error('Sync error:', error);
                 }
@@ -247,31 +262,45 @@ export default class PensioPlugin extends Plugin {
             id: 'logout',
             name: 'Logout (clear API token)',
             callback: async () => {
-                this._accessToken = '';
-                this._refreshToken = '';
-                await this.saveTokens();
-                this.syncEngine.clearState();
-                this.accountGuard.clearAccount();
-                this._syncState = null;
-                await this.saveSettings();
-                new Notice('Logged out — tokens and sync state cleared');
+                await this.logout();
             }
         });
     }
 
-    updateStatusBar(status: 'idle' | 'syncing' | 'error' | 'success') {
-        const icons = {
-            idle: '☁️',
-            syncing: '🔄',
-            error: '⚠️',
-            success: '✅'
-        };
+    /**
+     * Logout: clear tokens, sync state, and account cache.
+     * Called by both the command and the settings tab.
+     */
+    async logout(): Promise<void> {
+        this._accessToken = '';
+        this._refreshToken = '';
+        await this.saveTokens();
+        this.syncEngine.clearState();
+        this.accountGuard.clearAccount();
+        this._syncState = null;
+        await this.saveSettings();
+        this.updateStatusBar('idle');
+        new Notice('Logged out \u2014 tokens and sync state cleared');
+    }
 
-        this.statusBarItem.setText(`${icons[status]} Pensio`);
-
-        // Reset to idle after success/error
-        if (status === 'success' || status === 'error') {
-            setTimeout(() => this.updateStatusBar('idle'), 3000);
+    updateStatusBar(status: 'idle' | 'syncing' | 'error' | 'success', detail?: string) {
+        switch (status) {
+            case 'idle': {
+                const tracked = this.syncEngine.getTrackedFileCount();
+                this.statusBarItem.setText(tracked > 0 ? `☁️ ${tracked} synced` : '☁️ Pensio');
+                break;
+            }
+            case 'syncing':
+                this.statusBarItem.setText('🔄 Syncing...');
+                break;
+            case 'success':
+                this.statusBarItem.setText(detail ? `✅ ${detail}` : '✅ Synced');
+                setTimeout(() => this.updateStatusBar('idle'), 3000);
+                break;
+            case 'error':
+                this.statusBarItem.setText('⚠️ Sync error');
+                setTimeout(() => this.updateStatusBar('idle'), 5000);
+                break;
         }
     }
 
