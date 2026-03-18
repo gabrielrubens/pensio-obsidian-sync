@@ -89,6 +89,14 @@ export class ApiClient {
 
             return response.json as T;
         } catch (error) {
+            // Handle redirect-induced 405: some HTTP clients (including Obsidian's
+            // requestUrl) downgrade POST→GET on 301/302 redirects. If we get 405,
+            // retry once with method preserved.
+            if (error.status === 405 && method === 'POST' && retryCount < 1) {
+                debugLog('Got 405 on POST (likely redirect downgraded to GET), retrying...');
+                return this.request<T>(method, endpoint, body, retryCount + 1);
+            }
+
             if (error.status === 401 && retryCount < 1) {
                 debugLog('Got 401, attempting token refresh and retry...');
                 const newTokens = await this.tokenManager.handleUnauthorized();
