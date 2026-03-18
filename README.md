@@ -140,34 +140,6 @@ All of this happens on the web — your markdown files in Obsidian stay untouche
 
 For a full overview of the plugin and Pensio's features, see the [Obsidian Sync feature page](https://pensio.app/features/obsidian-sync/).
 
-## Development
-
-```bash
-npm install          # Install dependencies
-npm run build        # Production build (tsc + esbuild)
-npm run dev          # Watch mode
-npm test             # Run tests
-```
-
-### Architecture
-
-```
-src/
-├── main.ts              # Plugin entry point, settings, token persistence
-├── settings.ts          # Settings UI tab
-├── types.ts             # TypeScript types & defaults
-├── logger.ts            # Debug logging (gated behind settings.debugMode)
-├── api/
-│   └── client.ts        # HTTP client (requestUrl, JWT auth, bulk sync)
-├── auth/
-│   ├── tokenManager.ts  # JWT lifecycle (refresh scheduling, 401 handling)
-│   └── accountGuard.ts  # Cross-account safety (prevents data leaks)
-└── sync/
-    ├── engine.ts        # Sync engine (file watching, batching, state)
-    ├── parser.ts        # Frontmatter parser (title, date, type)
-    └── hash.ts          # SHA-256 content hashing
-```
-
 ## Troubleshooting
 
 ### "Connection failed"
