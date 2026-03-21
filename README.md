@@ -129,6 +129,22 @@ People/
 
 Each file becomes a [relationship profile](https://pensio.app/features/relationships/) on Pensio. The person's name is taken from the `title` frontmatter key, or the filename if not set. You can add any notes about the person in the file body.
 
+#### Person frontmatter
+
+Add a `relationship` field to categorize the person:
+
+```yaml
+---
+title: Sarah
+relationship: close_friend
+birthday: 1990-05-15
+tags: [college, roommate]
+---
+Notes about Sarah...
+```
+
+**Accepted `relationship` values**: `partner`, `family`, `close_friend`, `friend`, `coworker`, `professional`, `acquaintance`, `other`. Legacy formats (e.g., `1:👪 Family`, `Friend`) are normalized automatically on sync.
+
 When you mention someone in a journal entry using `[[wikilinks]]` (e.g., `Had lunch with [[Sarah]]`), Pensio automatically links the mention to their relationship profile — whether the profile was created from the People folder or from a wikilink.
 
 Configure the People folder path in Settings → Pensio Sync → Advanced. Set it to empty to disable people sync.
