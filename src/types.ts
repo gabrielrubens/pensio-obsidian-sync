@@ -170,8 +170,11 @@ export interface SyncedFileInfo {
 export interface ApiError {
     error?: {
         message: string;
-        type: string;
-        status_code: number;
+        // Stable machine code (unified error contract — docs/admin/api-errors.md).
+        // Optional: older backends omit it; the plugin reads `error.message`.
+        code?: string;
+        type?: string;
+        status_code?: number;
         fields?: Record<string, string[]>;
     };
     detail?: string;  // Django REST framework error detail
