@@ -1,10 +1,18 @@
-import { Notice, Plugin } from 'obsidian';
+import { Notice, Plugin, setIcon } from 'obsidian';
 import { ApiClient } from './api/client';
 import { AccountGuard } from './auth/accountGuard';
 import { debugLog, setDebugMode } from './logger';
 import { PensioSettingTab } from './settings';
 import { SyncEngine } from './sync/engine';
-import { DEFAULT_SETTINGS, PensioSettings, SyncStateData } from './types';
+import { DEFAULT_SETTINGS, JournalFolderMapping, PensioSettings, SyncStateData } from './types';
+
+/** Pre-0.3.0 folder mappings carried extra per-folder fields. */
+interface LegacyFolderMapping extends JournalFolderMapping {
+    entryType?: string;
+    label?: string;
+}
+
+type StatusBarState = 'idle' | 'syncing' | 'error' | 'success' | 'reconnect';
 
 export default class PensioPlugin extends Plugin {
     settings: PensioSettings;
@@ -27,6 +35,11 @@ export default class PensioPlugin extends Plugin {
         await this.loadSettings();
         setDebugMode(this.settings.debugMode);
 
+        // Every install owns a stable device id — the refresh and pair
+        // endpoints require one (per-device revocation), and older versions
+        // never generated it, which made every refresh fail validation.
+        await this.ensureDeviceId();
+
         // Load tokens from SecretStorage (encrypted at rest)
         await this.loadTokens();
 
@@ -48,6 +61,13 @@ export default class PensioPlugin extends Plugin {
                 this._refreshToken = '';
             }
             await this.saveTokens();
+        });
+
+        // Dead session (server-confirmed): keep tokens, surface a persistent
+        // reconnect state instead of wiping — re-pairing resets it.
+        this.apiClient.getTokenManager().setOnAuthInvalidated(() => {
+            this.updateStatusBar('reconnect');
+            new Notice('Pensio: session expired. Open Settings → Pensio Sync and enter a new setup code.');
         });
 
         // Initialize account guard
@@ -84,13 +104,14 @@ export default class PensioPlugin extends Plugin {
             this.syncEngine.startWatching();
             this.syncEngine.startAutoSync();
         }
-
-        new Notice('Pensio plugin loaded');
     }
 
     onunload() {
         this.syncEngine.stopWatching();
-        this.apiClient.destroy();
+        // Flush the current tokens one last time — SecretStorage write timing
+        // is opaque, and a quit right after a refresh must not lose the
+        // rotated token (that lockout is discovered days later).
+        void this.saveTokens();
     }
 
     async loadSettings() {
@@ -119,12 +140,32 @@ export default class PensioPlugin extends Plugin {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, settingsData);
 
         // Migrate old folder mappings that had entryType/label fields (pre-0.3.0)
-        if (this.settings.journalFolders?.length > 0 &&
-            (this.settings.journalFolders[0] as any).entryType !== undefined) {
-            this.settings.journalFolders = this.settings.journalFolders.map(
-                (m: any) => ({ folder: m.folder })
+        const folders = this.settings.journalFolders as LegacyFolderMapping[];
+        if (folders?.length > 0 && folders[0].entryType !== undefined) {
+            this.settings.journalFolders = folders.map(
+                (m): JournalFolderMapping => ({ folder: m.folder })
             );
         }
+    }
+
+    /**
+     * Make sure this install has a stable device id, generating and
+     * persisting one if missing. Returns the id.
+     */
+    async ensureDeviceId(): Promise<string> {
+        if (!this.settings.deviceId) {
+            const bytes = new Uint8Array(8);
+            crypto.getRandomValues(bytes);
+            const suffix = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+            this.settings.deviceId = `obsidian-${suffix}`;
+            const dataToSave: Record<string, unknown> = { ...this.settings };
+            if (this._syncState) {
+                dataToSave._syncState = this._syncState;
+            }
+            await this.saveData(dataToSave);
+            debugLog('Generated device id', this.settings.deviceId);
+        }
+        return this.settings.deviceId;
     }
 
     async saveSettings() {
@@ -275,6 +316,9 @@ export default class PensioPlugin extends Plugin {
         this._accessToken = '';
         this._refreshToken = '';
         await this.saveTokens();
+        // Also drop the in-memory copies held by the token manager \u2014 the only
+        // place tokens are ever wiped is this explicit logout.
+        await this.apiClient.logout();
         this.syncEngine.clearState();
         this.accountGuard.clearAccount();
         this._syncState = null;
@@ -283,25 +327,42 @@ export default class PensioPlugin extends Plugin {
         new Notice('Logged out \u2014 tokens and sync state cleared');
     }
 
-    updateStatusBar(status: 'idle' | 'syncing' | 'error' | 'success', detail?: string) {
+    updateStatusBar(status: StatusBarState, detail?: string) {
         switch (status) {
             case 'idle': {
+                // A dead session takes priority over the idle display — the
+                // reconnect hint must stay visible, not be reset by the
+                // success/error timeouts below.
+                if (this.apiClient?.isAuthInvalidated()) {
+                    this.setStatusBar('cloud-off', 'Reconnect Pensio');
+                    break;
+                }
                 const tracked = this.syncEngine.getTrackedFileCount();
-                this.statusBarItem.setText(tracked > 0 ? `☁️ ${tracked} synced` : '☁️ Pensio');
+                this.setStatusBar('cloud', tracked > 0 ? `${tracked} synced` : 'Pensio');
                 break;
             }
             case 'syncing':
-                this.statusBarItem.setText('🔄 Syncing...');
+                this.setStatusBar('refresh-cw', 'Syncing...');
                 break;
             case 'success':
-                this.statusBarItem.setText(detail ? `✅ ${detail}` : '✅ Synced');
+                this.setStatusBar('check', detail ?? 'Synced');
                 setTimeout(() => this.updateStatusBar('idle'), 3000);
                 break;
             case 'error':
-                this.statusBarItem.setText('⚠️ Sync error');
+                this.setStatusBar('alert-triangle', 'Sync error');
                 setTimeout(() => this.updateStatusBar('idle'), 5000);
                 break;
+            case 'reconnect':
+                this.setStatusBar('cloud-off', 'Reconnect Pensio');
+                break;
         }
+    }
+
+    private setStatusBar(icon: string, text: string): void {
+        this.statusBarItem.empty();
+        const iconEl = this.statusBarItem.createSpan({ cls: 'pensio-status-icon' });
+        setIcon(iconEl, icon);
+        this.statusBarItem.createSpan({ text, cls: 'pensio-status-text' });
     }
 
     // ========================================================================
@@ -398,20 +459,28 @@ export default class PensioPlugin extends Plugin {
     }
 
     /**
-     * Save current in-memory tokens to SecretStorage.
-     * Also called by the onTokensChanged callback after refresh.
+     * Save current in-memory tokens to SecretStorage, verified by read-back.
+     * Also called by the onTokensChanged callback after refresh. Losing this
+     * write used to brick the pairing (the server no longer blacklists the
+     * predecessor, so a lost write is recoverable — but still verify).
      */
     async saveTokens(): Promise<void> {
+        const write = () => {
+            this.app.secretStorage.setSecret(PensioPlugin.SECRET_ACCESS_TOKEN, this._accessToken);
+            this.app.secretStorage.setSecret(PensioPlugin.SECRET_REFRESH_TOKEN, this._refreshToken);
+        };
+        const verified = () =>
+            (this.app.secretStorage.getSecret(PensioPlugin.SECRET_ACCESS_TOKEN) || '') === this._accessToken &&
+            (this.app.secretStorage.getSecret(PensioPlugin.SECRET_REFRESH_TOKEN) || '') === this._refreshToken;
+
         try {
-            if (this._accessToken) {
-                this.app.secretStorage.setSecret(PensioPlugin.SECRET_ACCESS_TOKEN, this._accessToken);
-            } else {
-                this.app.secretStorage.setSecret(PensioPlugin.SECRET_ACCESS_TOKEN, '');
-            }
-            if (this._refreshToken) {
-                this.app.secretStorage.setSecret(PensioPlugin.SECRET_REFRESH_TOKEN, this._refreshToken);
-            } else {
-                this.app.secretStorage.setSecret(PensioPlugin.SECRET_REFRESH_TOKEN, '');
+            write();
+            if (!verified()) {
+                debugLog('SecretStorage read-back mismatch — retrying token save');
+                write();
+                if (!verified()) {
+                    console.error('Pensio: token save could not be verified — tokens may not survive a restart');
+                }
             }
         } catch (error) {
             console.error('Failed to save tokens to SecretStorage:', error);
@@ -447,6 +516,8 @@ export default class PensioPlugin extends Plugin {
             this.syncEngine.startWatching();
             this.syncEngine.startAutoSync();
         }
+        // Re-pairing resets a dead session — clear the reconnect hint.
+        this.updateStatusBar('idle');
     }
 
     /**

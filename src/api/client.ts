@@ -1,5 +1,5 @@
 import { requestUrl, RequestUrlParam, RequestUrlResponse } from 'obsidian';
-import { TokenManager } from '../auth/tokenManager';
+import { RefreshError, TokenManager } from '../auth/tokenManager';
 import { debugLog } from '../logger';
 import {
     ApiError,
@@ -7,6 +7,7 @@ import {
     BulkSyncResponse,
     CurrentUserResponse,
     EntryResponse,
+    PairResponse,
     PensioSettings,
     PersonResponse,
     SyncStatusResponse,
@@ -40,10 +41,6 @@ export class ApiClient {
         this.tokenManager.updateDeviceId(settings.deviceId);
     }
 
-    destroy(): void {
-        this.tokenManager.cancelRefreshTimer();
-    }
-
     // ========================================================================
     // Core HTTP
     // ========================================================================
@@ -55,9 +52,10 @@ export class ApiClient {
         retryCount = 0
     ): Promise<T> {
         if (this.tokenManager.isAuthInvalidated()) {
-            const err: any = new Error('Authentication expired');
-            err.status = 401;
-            throw err;
+            throw new RefreshError(
+                'auth-invalid',
+                'Pensio session expired — reconnect in the plugin settings'
+            );
         }
 
         // Normalize: fallback to default if empty, strip www. to avoid Cloudflare 301 redirect
@@ -104,6 +102,12 @@ export class ApiClient {
 
                 if (newTokens) {
                     return this.request<T>(method, endpoint, body, retryCount + 1);
+                }
+                if (this.tokenManager.isAuthInvalidated()) {
+                    throw new RefreshError(
+                        'auth-invalid',
+                        'Pensio session expired — reconnect in the plugin settings'
+                    );
                 }
             }
 
@@ -158,6 +162,48 @@ export class ApiClient {
 
     async fetchCurrentUser(): Promise<CurrentUserResponse> {
         return await this.request<CurrentUserResponse>('GET', '/api/v1/auth/me/');
+    }
+
+    /**
+     * Exchange a one-time setup code (minted on the Pensio token page) for a
+     * fresh per-device token family. Unauthenticated by design — the code is
+     * the credential — so it bypasses request()/getAccessToken().
+     */
+    async pair(
+        code: string,
+        deviceId: string,
+        deviceName: string
+    ): Promise<PairResponse> {
+        const baseUrl = (this.settings.apiUrl || 'https://pensio.app').replace('://www.', '://');
+        const response = await requestUrl({
+            url: `${baseUrl}/api/v1/auth/pair/`,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                code,
+                device_id: deviceId,
+                device_name: deviceName,
+            }),
+            throw: false,
+        });
+
+        if (response.status >= 200 && response.status < 300) {
+            return response.json as PairResponse;
+        }
+
+        let message = 'Pairing failed — check the code and try again';
+        try {
+            const apiError = response.json as ApiError;
+            message = apiError.error?.fields?.code?.[0]
+                || apiError.error?.message
+                || apiError.detail
+                || message;
+        } catch {
+            // non-JSON error body — keep the generic message
+        }
+        const err: any = new Error(message);
+        err.status = response.status;
+        throw err;
     }
 
     // ========================================================================

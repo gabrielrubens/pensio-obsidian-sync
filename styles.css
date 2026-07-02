@@ -116,3 +116,15 @@
 .pensio-folder-desc {
     margin-bottom: 8px;
 }
+/* ── Status bar ── */
+.pensio-status-icon {
+    display: inline-flex;
+    align-items: center;
+    margin-right: var(--size-2-1);
+    vertical-align: middle;
+}
+
+.pensio-status-icon svg {
+    width: var(--icon-s);
+    height: var(--icon-s);
+}

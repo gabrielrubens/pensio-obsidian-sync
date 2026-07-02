@@ -176,6 +176,36 @@ export class PensioSettingTab extends PluginSettingTab {
                     this.plugin.settings.debugMode = value;
                     await this.plugin.saveSettings();
                 }));
+
+        // Manual token entry — for self-hosters who prefer pasting JWTs over
+        // the setup-code pairing. The normal path is the Setup code above.
+        new Setting(containerEl)
+            .setName('Access token')
+            .setDesc('Manual token entry (advanced) — prefer the setup code')
+            .addText(text => {
+                text
+                    .setPlaceholder('Access token')
+                    .setValue(this.plugin.getAccessToken())
+                    .onChange(async (value) => {
+                        await this.plugin.setTokens(value.trim(), this.plugin.getRefreshToken());
+                    });
+                text.inputEl.type = 'password';
+            });
+
+        new Setting(containerEl)
+            .setName('Refresh token')
+            .setDesc('Both tokens are required when entered manually')
+            .addText(text => {
+                text
+                    .setPlaceholder('Refresh token')
+                    .setValue(this.plugin.getRefreshToken())
+                    .onChange(async (value) => {
+                        await this.plugin.setTokens(this.plugin.getAccessToken(), value.trim());
+                    });
+                text.inputEl.type = 'password';
+            });
+
+        this.renderTestButton(containerEl);
     }
 
     /**
@@ -252,7 +282,10 @@ export class PensioSettingTab extends PluginSettingTab {
         const hasBothTokens = this.plugin.getAccessToken() && this.plugin.getRefreshToken();
         const account = this.plugin.accountGuard.getAccount();
 
-        if (hasBothTokens && account) {
+        if (hasBothTokens && this.plugin.apiClient.isAuthInvalidated()) {
+            // ── Session dead (server-confirmed) — reconnect without data loss ──
+            this.renderReconnectState(containerEl, apiUrl);
+        } else if (hasBothTokens && account) {
             // ── Connected state ──
             this.renderConnectedState(containerEl, apiUrl, account);
         } else if (hasBothTokens) {
@@ -298,38 +331,13 @@ export class PensioSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('Manage tokens')
-            .setDesc('Regenerate or revoke your API tokens')
+            .setName('Manage devices')
+            .setDesc('Review or revoke connected devices and tokens')
             .addButton(button => button
                 .setButtonText('Token page')
                 .onClick(() => {
-                    window.open(`${apiUrl}/settings/#tokens`);
+                    window.open(`${apiUrl}/tokens/`);
                 }));
-
-        // Token fields (collapsed under a details-like setting)
-        new Setting(containerEl)
-            .setName('Access token')
-            .addText(text => {
-                text
-                    .setPlaceholder('Access token')
-                    .setValue(this.plugin.getAccessToken())
-                    .onChange(async (value) => {
-                        await this.plugin.setTokens(value.trim(), this.plugin.getRefreshToken());
-                    });
-                text.inputEl.type = 'password';
-            });
-
-        new Setting(containerEl)
-            .setName('Refresh token')
-            .addText(text => {
-                text
-                    .setPlaceholder('Refresh token')
-                    .setValue(this.plugin.getRefreshToken())
-                    .onChange(async (value) => {
-                        await this.plugin.setTokens(this.plugin.getAccessToken(), value.trim());
-                    });
-                text.inputEl.type = 'password';
-            });
 
         // Logout
         new Setting(containerEl)
@@ -353,43 +361,33 @@ export class PensioSettingTab extends PluginSettingTab {
         statusRow.createSpan({ text: '\u25CB', cls: 'pensio-status-dot pensio-status-pending' });
         statusRow.createSpan({ text: 'Tokens entered \u2014 not yet verified', cls: 'pensio-account-email' });
 
-        // Token fields
-        new Setting(containerEl)
-            .setName('Access token')
-            .setDesc('Paste the access token from your Pensio settings page')
-            .addText(text => {
-                text
-                    .setPlaceholder('Enter your access token')
-                    .setValue(this.plugin.getAccessToken())
-                    .onChange(async (value) => {
-                        await this.plugin.setTokens(value.trim(), this.plugin.getRefreshToken());
-                    });
-                text.inputEl.type = 'password';
-            });
-
-        new Setting(containerEl)
-            .setName('Refresh token')
-            .setDesc('Paste the refresh token (valid 90 days). Both tokens are required.')
-            .addText(text => {
-                text
-                    .setPlaceholder('Enter your refresh token')
-                    .setValue(this.plugin.getRefreshToken())
-                    .onChange(async (value) => {
-                        await this.plugin.setTokens(this.plugin.getAccessToken(), value.trim());
-                    });
-                text.inputEl.type = 'password';
-            });
-
         this.renderTestButton(containerEl);
     }
 
     /**
-     * Disconnected: getting-started onboarding + token fields + test button.
+     * Session dead (server-confirmed): tokens are kept, nothing was deleted —
+     * a new setup code reconnects without touching sync state.
+     */
+    private renderReconnectState(containerEl: HTMLElement, apiUrl: string): void {
+        const card = containerEl.createDiv({ cls: 'pensio-account-card' });
+        const statusRow = card.createDiv({ cls: 'pensio-account-status' });
+        statusRow.createSpan({ text: '\u26A0', cls: 'pensio-status-dot pensio-status-pending' });
+        statusRow.createSpan({ text: 'Session expired \u2014 reconnect to resume syncing', cls: 'pensio-account-email' });
+        card.createEl('p', {
+            text: 'Your notes and sync history are untouched. Enter a new setup code to reconnect.',
+            cls: 'pensio-token-status',
+        });
+
+        this.renderPairingSetting(containerEl, apiUrl);
+    }
+
+    /**
+     * Disconnected: getting-started onboarding + setup-code pairing.
      */
     private renderDisconnectedState(containerEl: HTMLElement, apiUrl: string): void {
         const gettingStarted = containerEl.createDiv({ cls: 'pensio-getting-started' });
         const steps = gettingStarted.createEl('p');
-        steps.appendText('To connect this plugin you need a Pensio account and API tokens.');
+        steps.appendText('To connect this plugin you need a Pensio account and a setup code.');
 
         const stepList = gettingStarted.createEl('ol');
 
@@ -402,45 +400,71 @@ export class PensioSettingTab extends PluginSettingTab {
         step1.appendText(' (if you don\u2019t have one)');
 
         const step2 = stepList.createEl('li');
-        step2.appendText('Go to ');
-        const tokenLink = step2.createEl('a', {
-            text: 'Settings \u2192 API tokens',
-            href: `${apiUrl}/settings/#tokens`,
+        step2.appendText('Open ');
+        const pairLink = step2.createEl('a', {
+            text: 'Connect Obsidian',
+            href: `${apiUrl}/tokens/pair-obsidian/`,
         });
-        tokenLink.setAttr('target', '_blank');
-        step2.appendText(' and generate tokens');
+        pairLink.setAttr('target', '_blank');
+        step2.appendText(' and generate a setup code');
 
         const step3 = stepList.createEl('li');
-        step3.appendText('Paste both tokens below and click Test');
+        step3.appendText('Enter the code below and click Connect');
 
-        // Token fields
+        this.renderPairingSetting(containerEl, apiUrl);
+    }
+
+    /**
+     * The setup-code field + Connect button (shared by the disconnected and
+     * reconnect states). Exchanges the code for a fresh per-device token
+     * family via POST /api/v1/auth/pair/.
+     */
+    private renderPairingSetting(containerEl: HTMLElement, apiUrl: string): void {
+        let code = '';
         new Setting(containerEl)
-            .setName('Access token')
-            .setDesc('Paste the access token from your Pensio settings page')
+            .setName('Setup code')
+            .setDesc('One-time code from the Connect Obsidian page \u2014 expires in 5 minutes')
             .addText(text => {
                 text
-                    .setPlaceholder('Enter your access token')
-                    .setValue(this.plugin.getAccessToken())
-                    .onChange(async (value) => {
-                        await this.plugin.setTokens(value.trim(), this.plugin.getRefreshToken());
+                    .setPlaceholder('XXXX-XXXX')
+                    .onChange((value) => {
+                        code = value.trim();
                     });
-                text.inputEl.type = 'password';
-            });
+            })
+            .addButton(button => {
+                button
+                    .setButtonText('Connect')
+                    .setCta()
+                    .onClick(async () => {
+                        if (!code) {
+                            new Notice('Enter the setup code from your Pensio settings page');
+                            return;
+                        }
+                        try {
+                            button.setDisabled(true);
+                            button.setButtonText('Connecting...');
 
-        new Setting(containerEl)
-            .setName('Refresh token')
-            .setDesc('Paste the refresh token (valid 90 days). Both tokens are required.')
-            .addText(text => {
-                text
-                    .setPlaceholder('Enter your refresh token')
-                    .setValue(this.plugin.getRefreshToken())
-                    .onChange(async (value) => {
-                        await this.plugin.setTokens(this.plugin.getAccessToken(), value.trim());
+                            const deviceId = await this.plugin.ensureDeviceId();
+                            const deviceName = `Obsidian \u2014 ${this.app.vault.getName()}`;
+                            const result = await this.plugin.apiClient.pair(code, deviceId, deviceName);
+                            await this.plugin.setTokens(result.access, result.refresh);
+
+                            const verified = await this.plugin.verifyAccountBeforeSync();
+                            const account = this.plugin.accountGuard.getAccount();
+                            if (verified && account) {
+                                new Notice(`Connected as ${account.email}`);
+                            } else {
+                                new Notice('Connected \u2014 verifying account on first sync');
+                            }
+                            this.display();
+                        } catch (error) {
+                            new Notice(`Pairing failed: ${error.message}`);
+                            console.error('Pairing failed:', error);
+                            button.setDisabled(false);
+                            button.setButtonText('Connect');
+                        }
                     });
-                text.inputEl.type = 'password';
             });
-
-        this.renderTestButton(containerEl);
     }
 
     /**

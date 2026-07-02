@@ -21,4 +21,5 @@ module.exports = {
     TAbstractFile: class TAbstractFile { },
     FuzzySuggestModal: class FuzzySuggestModal { },
     requestUrl: jest.fn(),
+    setIcon: jest.fn(),
 };

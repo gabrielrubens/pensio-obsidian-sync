@@ -11,6 +11,6 @@ export function setDebugMode(enabled: boolean): void {
 
 export function debugLog(...args: unknown[]): void {
     if (_debugMode) {
-        console.log('[Pensio]', ...args);
+        console.debug('[Pensio]', ...args);
     }
 }

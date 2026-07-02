@@ -1,10 +1,26 @@
-import { Notice, requestUrl } from 'obsidian';
+import { requestUrl } from 'obsidian';
 import { debugLog } from '../logger';
 
 export interface TokenData {
     accessToken: string;
     refreshToken: string;
     expiresAt: number;
+}
+
+/**
+ * Why a refresh attempt failed.
+ * - 'auth-invalid': the server confirmed the refresh token is dead (expired,
+ *   revoked, wrong type, account gone). Re-pairing is required.
+ * - 'transient': network problem, server error, or rate limit. The tokens are
+ *   fine — the next sync retries.
+ */
+export type RefreshFailureReason = 'auth-invalid' | 'transient';
+
+export class RefreshError extends Error {
+    constructor(readonly reason: RefreshFailureReason, message: string) {
+        super(message);
+        this.name = 'RefreshError';
+    }
 }
 
 /**
@@ -26,17 +42,37 @@ function parseJwtExpiry(token: string): number | null {
     }
 }
 
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Callback invoked whenever tokens change (refresh, login, logout).
- * Implementor persists the new tokens to data.json.
+ * Implementor persists the new tokens to SecretStorage.
  */
 export type OnTokensChanged = (tokens: TokenData | null) => Promise<void>;
 
 /**
- * Manages JWT token lifecycle: auto-refresh, 401 handling, expiry tracking.
+ * Callback invoked once when the server confirms the session is dead and
+ * re-pairing is required. UX (notice, status bar) is the caller's job.
+ */
+export type OnAuthInvalidated = () => void;
+
+/**
+ * Manages the JWT token lifecycle: lazy refresh, 401 handling, expiry tracking.
  *
- * Tokens are held in memory only. Persistence is handled by the caller
- * via the onTokensChanged callback (which saves to data.json).
+ * Design rules (see the 2026-07 token-death audit):
+ * - Refresh is LAZY only — in getAccessToken() near expiry and on 401. There
+ *   is deliberately no background timer: every refresh is a persist event and
+ *   idle churn multiplied the chances of a lost write.
+ * - Tokens are NEVER wiped on failure. Transient errors retry with backoff;
+ *   a server-confirmed dead session flips authInvalidated and keeps the
+ *   tokens in place. Wiping is for explicit logout only.
+ * - getAccessToken() never hands back a stale token after a failed refresh —
+ *   it throws a typed RefreshError instead.
+ *
+ * Tokens are held in memory only. Persistence is handled by the caller via
+ * the onTokensChanged callback.
  */
 export class TokenManager {
     private apiUrl: string;
@@ -45,13 +81,16 @@ export class TokenManager {
     private refreshTokenValue: string | null = null;
     private expiresAt: number = 0;
     private refreshPromise: Promise<TokenData> | null = null;
-    private refreshTimer: NodeJS.Timeout | null = null;
     private authInvalidated = false;
     private onTokensChanged: OnTokensChanged | null = null;
+    private onAuthInvalidated: OnAuthInvalidated | null = null;
+    /** Waits before retry 2..n of a failed refresh. Injectable for tests. */
+    private readonly retryDelaysMs: number[];
 
-    constructor(apiUrl: string, deviceId: string = '') {
+    constructor(apiUrl: string, deviceId: string = '', retryDelaysMs: number[] = [1000, 3000]) {
         this.apiUrl = apiUrl;
         this.deviceId = deviceId;
+        this.retryDelaysMs = retryDelaysMs;
     }
 
     /**
@@ -61,29 +100,37 @@ export class TokenManager {
         this.onTokensChanged = callback;
     }
 
+    setOnAuthInvalidated(callback: OnAuthInvalidated): void {
+        this.onAuthInvalidated = callback;
+    }
+
     async initialize(accessToken: string, refreshToken: string): Promise<void> {
         this.accessToken = accessToken;
         this.refreshTokenValue = refreshToken;
         this.expiresAt = parseJwtExpiry(accessToken) ?? Date.now() + (30 * 60 * 1000);
         this.authInvalidated = false;
-        this.scheduleRefresh(this.expiresAt);
     }
 
+    /**
+     * The access token to use for the next request, refreshing lazily when it
+     * is within the expiry buffer. Throws RefreshError when a needed refresh
+     * fails — never returns a token known to be stale.
+     */
     async getAccessToken(): Promise<string | null> {
-        if (this.authInvalidated) return null;
+        if (this.authInvalidated) {
+            throw new RefreshError(
+                'auth-invalid',
+                'Pensio session expired — reconnect in the plugin settings'
+            );
+        }
         if (!this.accessToken) return null;
 
         // Refresh if less than 2 minutes remaining
         const buffer = 2 * 60 * 1000;
         if (this.expiresAt - Date.now() < buffer) {
             debugLog('Token expiring soon, refreshing...');
-            try {
-                const newTokens = await this.refreshToken();
-                return newTokens.accessToken;
-            } catch (error) {
-                console.error('Failed to refresh token:', error);
-                return this.accessToken;
-            }
+            const newTokens = await this.refreshToken();
+            return newTokens.accessToken;
         }
 
         return this.accessToken;
@@ -102,59 +149,136 @@ export class TokenManager {
 
     private async _performRefresh(): Promise<TokenData> {
         if (this.authInvalidated) {
-            throw new Error('Authentication was invalidated — please log in again');
+            throw new RefreshError(
+                'auth-invalid',
+                'Pensio session expired — reconnect in the plugin settings'
+            );
         }
         if (!this.refreshTokenValue) {
-            throw new Error('No refresh token available');
+            throw new RefreshError('auth-invalid', 'No refresh token available');
         }
 
+        // Normalize: fallback to default if empty, strip www. to avoid Cloudflare 301 redirect
+        const baseUrl = (this.apiUrl || 'https://pensio.app').replace('://www.', '://');
+
+        for (let attempt = 0; attempt <= this.retryDelaysMs.length; attempt++) {
+            if (attempt > 0) {
+                await sleep(this.retryDelaysMs[attempt - 1]);
+            }
+
+            let response;
+            try {
+                response = await requestUrl({
+                    url: `${baseUrl}/api/v1/auth/refresh/`,
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        refresh: this.refreshTokenValue,
+                        device_id: this.deviceId,
+                    }),
+                    // Get the response object for 4xx/5xx too — the status and
+                    // body drive the auth-invalid vs transient classification.
+                    throw: false,
+                });
+            } catch (error) {
+                // No HTTP response at all (offline, DNS, TLS) — retryable.
+                debugLog(`Token refresh network error (attempt ${attempt + 1}):`, error);
+                continue;
+            }
+
+            if (response.status >= 200 && response.status < 300) {
+                const data: { access: string; refresh?: string } = response.json;
+
+                const expiresAt = parseJwtExpiry(data.access) ?? Date.now() + (30 * 60 * 1000);
+                const newTokens: TokenData = {
+                    accessToken: data.access,
+                    // Sliding reissue: the server returns a new refresh token
+                    // only past ~half of the current one's life — keep ours
+                    // otherwise.
+                    refreshToken: data.refresh || this.refreshTokenValue,
+                    expiresAt
+                };
+
+                this.accessToken = newTokens.accessToken;
+                this.refreshTokenValue = newTokens.refreshToken;
+                this.expiresAt = expiresAt;
+
+                // Notify caller to persist new tokens
+                if (this.onTokensChanged) {
+                    await this.onTokensChanged(newTokens);
+                }
+
+                debugLog('Token refreshed successfully');
+                return newTokens;
+            }
+
+            if (this.isAuthInvalidResponse(response)) {
+                this.markAuthInvalid();
+                throw new RefreshError(
+                    'auth-invalid',
+                    'Pensio session expired — reconnect in the plugin settings'
+                );
+            }
+
+            // Everything else (5xx during a deploy, 429, an unrecognized 4xx)
+            // is treated as transient and retried.
+            debugLog(`Token refresh got HTTP ${response.status} (attempt ${attempt + 1})`);
+        }
+
+        throw new RefreshError(
+            'transient',
+            'Could not refresh Pensio authentication — will retry on the next sync'
+        );
+    }
+
+    /**
+     * Only a response the server meant as "this token is dead" counts:
+     * 401, or a 400 carrying the stable reauth_required code (api/errors.py)
+     * or SimpleJWT's token_not_valid/blacklist markers (older self-hosted
+     * servers without the error envelope).
+     */
+    private isAuthInvalidResponse(response: { status: number; json?: unknown }): boolean {
+        if (response.status === 401) return true;
+        if (response.status !== 400) return false;
+
+        let body: unknown;
         try {
-            // Normalize: fallback to default if empty, strip www. to avoid Cloudflare 301 redirect
-            const baseUrl = (this.apiUrl || 'https://pensio.app').replace('://www.', '://');
-            const response = await requestUrl({
-                url: `${baseUrl}/api/v1/auth/refresh/`,
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    refresh: this.refreshTokenValue,
-                    device_id: this.deviceId,
-                })
-            });
+            body = response.json;
+        } catch {
+            return false; // non-JSON 400 body — not a recognized token error
+        }
+        const code = (body as { error?: { code?: string }; code?: string })?.error?.code
+            ?? (body as { code?: string })?.code;
+        if (code === 'reauth_required' || code === 'token_not_valid') return true;
 
-            const data: { access: string; refresh?: string } = response.json;
-
-            const expiresAt = parseJwtExpiry(data.access) ?? Date.now() + (30 * 60 * 1000);
-            const newTokens: TokenData = {
-                accessToken: data.access,
-                refreshToken: data.refresh || this.refreshTokenValue,
-                expiresAt
-            };
-
-            this.accessToken = newTokens.accessToken;
-            this.refreshTokenValue = newTokens.refreshToken;
-            this.expiresAt = expiresAt;
-            this.scheduleRefresh(expiresAt);
-
-            // Notify caller to persist new tokens
-            if (this.onTokensChanged) {
-                await this.onTokensChanged(newTokens);
-            }
-
-            debugLog('Token refreshed successfully');
-            return newTokens;
-        } catch (error) {
-            console.error('Token refresh failed:', error);
-
-            if (error.status === 401) {
-                this.authInvalidated = true;
-                await this.clearTokens();
-                new Notice('Session expired. Please log in again in Pensio settings.');
-            }
-
-            throw new Error('Failed to refresh authentication token');
+        try {
+            const text = JSON.stringify(body ?? {}).toLowerCase();
+            return text.includes('token_not_valid')
+                || text.includes('blacklisted')
+                || text.includes('invalid or expired');
+        } catch {
+            return false;
         }
     }
 
+    /**
+     * Flip to the persistent "reconnect" state. Tokens are intentionally NOT
+     * cleared — server-side they are already dead, and wiping is reserved for
+     * explicit logout. Re-pairing (initialize) resets the flag.
+     */
+    private markAuthInvalid(): void {
+        if (this.authInvalidated) return;
+        this.authInvalidated = true;
+        if (this.onAuthInvalidated) {
+            this.onAuthInvalidated();
+        }
+    }
+
+    /**
+     * Called by the API client after a request got a 401: try one refresh.
+     * Returns the new tokens, or null when the request should not be retried.
+     * Never wipes tokens.
+     */
     async handleUnauthorized(): Promise<TokenData | null> {
         if (this.authInvalidated) {
             debugLog('Auth already invalidated, skipping refresh attempt');
@@ -166,52 +290,14 @@ export class TokenManager {
             return await this.refreshToken();
         } catch (error) {
             console.error('Token refresh on 401 failed:', error);
-            if (!this.authInvalidated) {
-                this.authInvalidated = true;
-                await this.clearTokens();
-            }
             return null;
         }
     }
 
-    private scheduleRefresh(expiresAt: number): void {
-        if (this.refreshTimer) {
-            clearTimeout(this.refreshTimer);
-        }
-
-        // Refresh 2 minutes before expiry
-        const buffer = 2 * 60 * 1000;
-        const delay = expiresAt - buffer - Date.now();
-
-        if (delay > 0) {
-            debugLog(`Scheduling token refresh in ${Math.round(delay / 1000 / 60)} minutes`);
-            this.refreshTimer = setTimeout(async () => {
-                try {
-                    debugLog('Auto-refreshing token...');
-                    await this.refreshToken();
-                    new Notice('Authentication refreshed automatically', 3000);
-                } catch (error) {
-                    console.error('Auto-refresh failed:', error);
-                    new Notice('Failed to refresh authentication. Please check your connection.');
-                }
-            }, delay);
-        } else {
-            debugLog('Token expired or expiring very soon, refreshing immediately');
-            this.refreshToken().catch(error => {
-                console.error('Immediate refresh failed:', error);
-            });
-        }
-    }
-
-    cancelRefreshTimer(): void {
-        if (this.refreshTimer) {
-            clearTimeout(this.refreshTimer);
-            this.refreshTimer = null;
-        }
-    }
-
+    /**
+     * Forget tokens — explicit logout only. Never called on refresh failure.
+     */
     async clearTokens(): Promise<void> {
-        this.cancelRefreshTimer();
         this.accessToken = null;
         this.refreshTokenValue = null;
         this.expiresAt = 0;

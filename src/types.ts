@@ -48,6 +48,17 @@ export interface CurrentUserResponse {
     username: string;
 }
 
+/**
+ * Response from POST /api/v1/auth/pair/ — a fresh per-device token family
+ * in exchange for a one-time setup code.
+ */
+export interface PairResponse {
+    access: string;
+    refresh: string;
+    device_id: string;
+    device_name: string;
+}
+
 export interface SyncStatusResponse {
     last_sync: string | null;
     total_entries: number;

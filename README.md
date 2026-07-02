@@ -49,11 +49,13 @@ This plugin connects your Obsidian vault to Pensio so you can keep writing in yo
 ## Setup
 
 1. **Create a Pensio account** at [pensio.app/register](https://pensio.app/register/)
-2. **Get your tokens** — go to [Settings → API tokens](https://pensio.app/settings/#tokens) and generate an access + refresh token pair
-3. **Paste tokens** — open Obsidian Settings → Pensio Sync, paste both tokens, click **Test Connection**
+2. **Get a setup code** — open [Connect Obsidian](https://pensio.app/tokens/pair-obsidian/) and generate a one-time code
+3. **Pair** — open Obsidian Settings → Pensio Sync, enter the code, click **Connect**
 4. **Configure folders** — add your vault folders to sync (default: `Journal`)
 
 Auto-sync is on by default. Entries sync as you write.
+
+Self-hosting or prefer raw tokens? Manual access/refresh token entry lives under **Advanced**.
 
 ## Usage
 
@@ -71,10 +73,11 @@ Access via Command Palette (Ctrl/Cmd + P):
 
 ### Status bar
 
-- ☁️ Idle — ready to sync (shows tracked file count)
-- 🔄 Syncing — in progress
-- ✅ Success — sync completed (shows files synced)
-- ⚠️ Error — sync failed (check console for details)
+- **Cloud** idle — ready to sync (shows tracked file count)
+- **Spinner** syncing — in progress
+- **Check** success — sync completed (shows files synced)
+- **Warning** error — sync failed (check console for details)
+- **Cloud off** reconnect — session expired; enter a new setup code in settings (your notes and sync history are untouched)
 
 ### Frontmatter
 
@@ -166,8 +169,8 @@ All of this happens on the web — your markdown files in Obsidian stay untouche
 | What | Details |
 |---|---|
 | **Transport** | All communication over HTTPS |
-| **Authentication** | JWT access tokens (24h) + refresh tokens (90d) with automatic rotation |
-| **Token storage** | Obsidian SecretStorage (OS-level encrypted keychain) |
+| **Authentication** | One-time pairing code → per-device JWT family; short-lived access tokens, refresh tokens renewed automatically (sliding reissue) |
+| **Token storage** | Obsidian SecretStorage (OS-level encrypted keychain), write-verified |
 | **Data sent** | Markdown content, file paths, timestamps from configured folders only |
 | **Data NOT sent** | Files outside sync folders, `.obsidian` config, plugin settings, vault structure |
 | **Max file size** | 1 MB per file (larger files are skipped) |
@@ -180,8 +183,11 @@ For a full overview of the plugin and Pensio's features, see the [Obsidian Sync 
 
 ### "Connection failed"
 - Verify the server URL includes `https://`
-- Regenerate tokens from your Pensio settings page
+- Generate a fresh setup code from the Connect Obsidian page and pair again
 - Check network connectivity
+
+### "Session expired"
+- The plugin never deletes anything on failures — enter a new setup code in Settings → Pensio Sync to reconnect and syncing resumes where it left off
 
 ### Files not syncing
 - Confirm the file is inside a configured sync folder
