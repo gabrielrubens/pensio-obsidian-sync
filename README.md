@@ -1,6 +1,11 @@
 # Pensio Sync — Obsidian Plugin
 
-Sync your Obsidian vault with [Pensio](https://pensio.app) for AI-powered emotional insights and reflections.
+Sync your journal notes with [Pensio](https://pensio.app) for emotion tracking, relationship mapping, and AI-powered insights.
+
+> **Beta** — Pensio Sync is in open beta. It is stable in daily use, and we're
+> actively polishing based on feedback. Install via [BRAT](#brat-recommended)
+> today, or from Community Plugins once the listing is approved. Found
+> something? [Open an issue](https://github.com/gabrielrubens/pensio-obsidian-sync/issues).
 
 > **Required disclosures** (per [Obsidian developer policies](https://docs.obsidian.md/Developer+policies)):
 > - **Account required** — A free [Pensio](https://pensio.app) account is needed.
@@ -19,7 +24,7 @@ This plugin connects your Obsidian vault to Pensio so you can keep writing in yo
 - **Selective sync** — only configured folders are synced; everything else stays local
 - **Multi-folder support** — map multiple vault folders for sync
 - **Frontmatter aware** — entry type and date extracted from YAML front matter
-- **Secure authentication** — JWT tokens with automatic refresh, stored in Obsidian's encrypted SecretStorage
+- **Secure authentication** — one-time pairing code, per-device tokens with automatic refresh, stored via Obsidian's SecretStorage
 - **Account safety** — detects account switches and prevents cross-account data leaks
 - **People folder sync** — dedicated folder for relationship notes, synced as Pensio relationship profiles
 - **Mirror delete** — entries removed from your vault are removed from Pensio (only plugin-created entries)
@@ -37,7 +42,7 @@ This plugin connects your Obsidian vault to Pensio so you can keep writing in yo
 
 ### Community Plugins
 
-*Available soon* — Pensio Sync will be submitted to the Obsidian Community Plugins directory.
+*Under review* — Pensio Sync has been submitted to the Obsidian Community Plugins directory. Until it's approved, use BRAT (above) — it auto-updates just like a directory install.
 
 ### Manual
 
@@ -170,7 +175,7 @@ All of this happens on the web — your markdown files in Obsidian stay untouche
 |---|---|
 | **Transport** | All communication over HTTPS |
 | **Authentication** | One-time pairing code → per-device JWT family; short-lived access tokens, refresh tokens renewed automatically (sliding reissue) |
-| **Token storage** | Obsidian SecretStorage (OS-level encrypted keychain), write-verified |
+| **Token storage** | Obsidian SecretStorage, write-verified — backed by the OS keychain on desktop; app-local (never inside your vault files, never synced with the vault) on mobile |
 | **Data sent** | Markdown content, file paths, timestamps from configured folders only |
 | **Data NOT sent** | Files outside sync folders, `.obsidian` config, plugin settings, vault structure |
 | **Max file size** | 1 MB per file (larger files are skipped) |

@@ -1,10 +1,10 @@
 {
     "id": "pensio-sync",
     "name": "Pensio Sync",
-    "version": "0.4.0",
+    "version": "0.4.1",
     "minAppVersion": "1.11.4",
-    "description": "Sync your Obsidian vault with Pensio for emotional insights and AI-powered reflections",
+    "description": "Sync your journal notes with Pensio for emotion tracking, relationship mapping, and AI-powered insights.",
     "author": "Pensio",
-    "authorUrl": "https://github.com/gabrielrubens/pensio",
+    "authorUrl": "https://pensio.app",
     "isDesktopOnly": false
 }

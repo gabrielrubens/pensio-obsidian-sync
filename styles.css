@@ -128,3 +128,15 @@
     width: var(--icon-s);
     height: var(--icon-s);
 }
+
+/* ── Beta badge ── */
+.pensio-beta-badge {
+    margin-left: var(--size-2-2);
+    padding: 0 var(--size-2-2);
+    font-size: var(--font-ui-smaller);
+    font-weight: var(--font-semibold);
+    color: var(--text-muted);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    vertical-align: middle;
+}

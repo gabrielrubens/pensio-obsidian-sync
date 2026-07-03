@@ -49,8 +49,9 @@ under **Advanced** for self-hosted servers.
 
 ## Storage
 
-- Tokens live in **Obsidian SecretStorage** (OS-level encrypted keychain),
-  never in `data.json` — so they can't leak through vault syncing.
+- Tokens live in **Obsidian SecretStorage** — backed by the OS keychain on
+  desktop, app-local storage on mobile — never in `data.json`, so they can't
+  leak through vault syncing.
 - Every save is **verified by read-back** (with one retry), and the plugin
   flushes tokens once more in `onunload()` as a belt-and-braces measure
   against opaque flush timing.

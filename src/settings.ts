@@ -217,6 +217,7 @@ export class PensioSettingTab extends PluginSettingTab {
         const titleRow = brandingEl.createDiv({ cls: 'pensio-branding-title' });
         titleRow.createSpan({ text: '✦ ', cls: 'pensio-branding-icon' });
         titleRow.createSpan({ text: 'Pensio', cls: 'pensio-branding-name' });
+        titleRow.createSpan({ text: 'Beta', cls: 'pensio-beta-badge' });
 
         brandingEl.createEl('p', {
             cls: 'pensio-branding-tagline',
