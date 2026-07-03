@@ -1,8 +1,8 @@
-# Pensio Sync — Obsidian Plugin
+# Pensio Journaling Sync
 
-Sync your journal notes with [Pensio](https://pensio.app) for emotion tracking, relationship mapping, and AI-powered insights.
+Sync your journal to [Pensio](https://pensio.app) for AI-powered journaling insights: emotion and mood tracking, relationship mapping, and weekly reflections on your notes.
 
-> **Beta** — Pensio Sync is in open beta. It is stable in daily use, and we're
+> **Beta** — Pensio Journaling Sync is in open beta. It is stable in daily use, and we're
 > actively polishing based on feedback. Install via [BRAT](#brat-recommended)
 > today, or from Community Plugins once the listing is approved. Found
 > something? [Open an issue](https://github.com/gabrielrubens/pensio-obsidian-sync/issues).
@@ -42,7 +42,7 @@ This plugin connects your Obsidian vault to Pensio so you can keep writing in yo
 
 ### Community Plugins
 
-*Under review* — Pensio Sync has been submitted to the Obsidian Community Plugins directory. Until it's approved, use BRAT (above) — it auto-updates just like a directory install.
+*Coming soon* — Pensio Journaling Sync will be listed in the Obsidian Community Plugins directory after its beta review. Until then, use BRAT (above) — it auto-updates just like a directory install.
 
 ### Manual
 
@@ -55,7 +55,7 @@ This plugin connects your Obsidian vault to Pensio so you can keep writing in yo
 
 1. **Create a Pensio account** at [pensio.app/register](https://pensio.app/register/)
 2. **Get a setup code** — open [Connect Obsidian](https://pensio.app/tokens/pair-obsidian/) and generate a one-time code
-3. **Pair** — open Obsidian Settings → Pensio Sync, enter the code, click **Connect**
+3. **Pair** — open Obsidian Settings → Pensio Journaling Sync, enter the code, click **Connect**
 4. **Configure folders** — add your vault folders to sync (default: `Journal`)
 
 Auto-sync is on by default. Entries sync as you write.
@@ -155,7 +155,7 @@ Notes about Sarah...
 
 When you mention someone in a journal entry using `[[wikilinks]]` (e.g., `Had lunch with [[Sarah]]`), Pensio automatically links the mention to their relationship profile — whether the profile was created from the People folder or from a wikilink.
 
-Configure the People folder path in Settings → Pensio Sync → Advanced. Set it to empty to disable people sync.
+Configure the People folder path in Settings → Pensio Journaling Sync → Advanced. Set it to empty to disable people sync.
 
 ## What you get on Pensio
 
@@ -192,7 +192,7 @@ For a full overview of the plugin and Pensio's features, see the [Obsidian Sync 
 - Check network connectivity
 
 ### "Session expired"
-- The plugin never deletes anything on failures — enter a new setup code in Settings → Pensio Sync to reconnect and syncing resumes where it left off
+- The plugin never deletes anything on failures — enter a new setup code in Settings → Pensio Journaling Sync to reconnect and syncing resumes where it left off
 
 ### Files not syncing
 - Confirm the file is inside a configured sync folder

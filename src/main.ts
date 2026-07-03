@@ -67,7 +67,7 @@ export default class PensioPlugin extends Plugin {
         // reconnect state instead of wiping — re-pairing resets it.
         this.apiClient.getTokenManager().setOnAuthInvalidated(() => {
             this.updateStatusBar('reconnect');
-            new Notice('Pensio: session expired. Open Settings → Pensio Sync and enter a new setup code.');
+            new Notice('Pensio: session expired. Open Settings → Pensio Journaling Sync and enter a new setup code.');
         });
 
         // Initialize account guard

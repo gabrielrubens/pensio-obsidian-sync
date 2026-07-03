@@ -1,6 +1,6 @@
 # Authentication & Token Lifecycle
 
-How Pensio Sync authenticates, refreshes, and stores credentials — and the
+How Pensio Journaling Sync authenticates, refreshes, and stores credentials — and the
 design rules that keep a pairing alive across weeks of Obsidian being closed.
 
 ## Pairing
