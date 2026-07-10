@@ -169,7 +169,9 @@ export default class PensioPlugin extends Plugin {
         if (!this.settings.deviceId) {
             const bytes = new Uint8Array(8);
             crypto.getRandomValues(bytes);
-            const suffix = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+            const suffix = Array.from(bytes)
+                .map((b: number) => b.toString(16).padStart(2, '0'))
+                .join('');
             this.settings.deviceId = `obsidian-${suffix}`;
             const dataToSave: Record<string, unknown> = { ...this.settings };
             if (this._syncState) {
