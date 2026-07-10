@@ -1,5 +1,6 @@
 import { requestUrl, RequestUrlParam, RequestUrlResponse } from 'obsidian';
 import { RefreshError, TokenManager } from '../auth/tokenManager';
+import { HttpError, toRequestError } from '../errors';
 import { debugLog } from '../logger';
 import {
     ApiError,
@@ -48,7 +49,7 @@ export class ApiClient {
     private async request<T>(
         method: string,
         endpoint: string,
-        body?: any,
+        body?: unknown,
         retryCount = 0
     ): Promise<T> {
         if (this.tokenManager.isAuthInvalidated()) {
@@ -88,15 +89,16 @@ export class ApiClient {
 
             return response.json as T;
         } catch (error) {
+            const reqErr = toRequestError(error);
             // Handle redirect-induced 405: some HTTP clients (including Obsidian's
             // requestUrl) downgrade POST→GET on 301/302 redirects. If we get 405,
             // retry once with method preserved.
-            if (error.status === 405 && method === 'POST' && retryCount < 1) {
+            if (reqErr.status === 405 && method === 'POST' && retryCount < 1) {
                 debugLog('Got 405 on POST (likely redirect downgraded to GET), retrying...');
                 return this.request<T>(method, endpoint, body, retryCount + 1);
             }
 
-            if (error.status === 401 && retryCount < 1) {
+            if (reqErr.status === 401 && retryCount < 1) {
                 debugLog('Got 401, attempting token refresh and retry...');
                 const newTokens = await this.tokenManager.handleUnauthorized();
 
@@ -111,12 +113,10 @@ export class ApiClient {
                 }
             }
 
-            if (error.status && error.json) {
-                const apiError = error.json as ApiError;
-                const errorMessage = apiError.error?.message || apiError.detail || 'API request failed';
-                const customError: any = new Error(errorMessage);
-                customError.status = error.status;
-                throw customError;
+            if (reqErr.status && reqErr.json) {
+                const apiError = reqErr.json as ApiError;
+                const message = apiError.error?.message || apiError.detail || 'API request failed';
+                throw new HttpError(message, reqErr.status);
             }
             throw error;
         }
@@ -201,9 +201,7 @@ export class ApiClient {
         } catch {
             // non-JSON error body — keep the generic message
         }
-        const err: any = new Error(message);
-        err.status = response.status;
-        throw err;
+        throw new HttpError(message, response.status);
     }
 
     // ========================================================================

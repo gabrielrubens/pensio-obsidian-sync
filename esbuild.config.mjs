@@ -1,6 +1,11 @@
-import builtins from "builtin-modules";
+import { builtinModules } from "node:module";
 import esbuild from "esbuild";
 import process from "process";
+
+// Node built-in module names, kept external so esbuild never tries to bundle
+// them. Replaces the `builtin-modules` package with Node's own list (per the
+// eslint-plugin-depend recommendation).
+const builtins = [...builtinModules, ...builtinModules.map((m) => `node:${m}`)];
 
 const banner =
     `/*

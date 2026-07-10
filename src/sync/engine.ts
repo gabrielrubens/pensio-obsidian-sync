@@ -18,7 +18,7 @@ export class SyncEngine {
     private apiClient: ApiClient;
     private isWatching = false;
     private isSyncing = false;
-    private syncIntervalTimer: NodeJS.Timeout | null = null;
+    private syncIntervalTimer: number | null = null;
     private readonly MAX_ENTRY_SIZE_MB = 1;
     private readonly SYNC_INTERVAL_MS = 5 * 60 * 1000;
     private readonly INITIAL_SYNC_DELAY_MS = 5000;
@@ -28,12 +28,12 @@ export class SyncEngine {
     // Dirty set: files changed by watcher, pending next syncAll
     private dirtyFiles = new Set<string>();
     private pendingDeletes = new Set<string>();
-    private watcherSyncTimer: NodeJS.Timeout | null = null;
+    private watcherSyncTimer: number | null = null;
 
     // Incremental sync tracking (persisted via onSaveState callback)
     private lastSyncTime: number | null = null;
     private syncedFiles: Map<string, SyncedFileInfo> = new Map();
-    private stateSaveTimer: NodeJS.Timeout | null = null;
+    private stateSaveTimer: number | null = null;
     private userId: string | null = null;
 
     // Bind handlers once to preserve reference for cleanup
@@ -50,8 +50,10 @@ export class SyncEngine {
         this.settings = settings;
         this.apiClient = apiClient;
 
-        this.boundOnFileChanged = this.onFileChanged.bind(this);
-        this.boundOnFileDeleted = this.onFileDeleted.bind(this);
+        // Arrow wrappers (not .bind, which the type-checker widens to `any`)
+        // keep a stable reference for off() while staying type-safe.
+        this.boundOnFileChanged = (file: TAbstractFile) => { this.onFileChanged(file); };
+        this.boundOnFileDeleted = (file: TAbstractFile) => { this.onFileDeleted(file); };
     }
 
     // ========================================================================
@@ -76,17 +78,17 @@ export class SyncEngine {
         this.isWatching = false;
 
         if (this.syncIntervalTimer) {
-            clearInterval(this.syncIntervalTimer);
+            window.clearInterval(this.syncIntervalTimer);
             this.syncIntervalTimer = null;
         }
         if (this.watcherSyncTimer) {
-            clearTimeout(this.watcherSyncTimer);
+            window.clearTimeout(this.watcherSyncTimer);
             this.watcherSyncTimer = null;
         }
         if (this.stateSaveTimer) {
-            clearTimeout(this.stateSaveTimer);
+            window.clearTimeout(this.stateSaveTimer);
             this.stateSaveTimer = null;
-            this.persistState();
+            void this.persistState();
         }
 
         this.app.vault.off('create', this.boundOnFileChanged);
@@ -95,39 +97,43 @@ export class SyncEngine {
     }
 
     startAutoSync(): void {
-        setTimeout(async () => {
-            if (!this.isWatching) return;
-            if (this.apiClient.isAuthInvalidated()) {
-                debugLog('Initial sync skipped — auth invalidated');
-                return;
-            }
-            debugLog('Running initial sync...');
-            try {
-                await this.syncAll(false);
-                debugLog('Initial sync completed');
-            } catch (error) {
-                console.error('Initial sync failed:', error);
-            }
+        window.setTimeout(() => {
+            void (async () => {
+                if (!this.isWatching) return;
+                if (this.apiClient.isAuthInvalidated()) {
+                    debugLog('Initial sync skipped — auth invalidated');
+                    return;
+                }
+                debugLog('Running initial sync...');
+                try {
+                    await this.syncAll(false);
+                    debugLog('Initial sync completed');
+                } catch (error) {
+                    console.error('Initial sync failed:', error);
+                }
+            })();
         }, this.INITIAL_SYNC_DELAY_MS);
 
         if (this.syncIntervalTimer) {
-            clearInterval(this.syncIntervalTimer);
+            window.clearInterval(this.syncIntervalTimer);
         }
-        this.syncIntervalTimer = setInterval(async () => {
-            if (this.isSyncing) {
-                debugLog('Periodic sync skipped — sync already in progress');
-                return;
-            }
-            if (this.apiClient.isAuthInvalidated()) {
-                debugLog('Periodic sync skipped — auth invalidated');
-                return;
-            }
-            debugLog('Running periodic sync...');
-            try {
-                await this.syncAll(false);
-            } catch (error) {
-                console.error('Periodic sync failed:', error);
-            }
+        this.syncIntervalTimer = window.setInterval(() => {
+            void (async () => {
+                if (this.isSyncing) {
+                    debugLog('Periodic sync skipped — sync already in progress');
+                    return;
+                }
+                if (this.apiClient.isAuthInvalidated()) {
+                    debugLog('Periodic sync skipped — auth invalidated');
+                    return;
+                }
+                debugLog('Running periodic sync...');
+                try {
+                    await this.syncAll(false);
+                } catch (error) {
+                    console.error('Periodic sync failed:', error);
+                }
+            })();
         }, this.SYNC_INTERVAL_MS);
     }
 
@@ -160,23 +166,25 @@ export class SyncEngine {
      */
     private scheduleSyncFromWatcher(): void {
         if (this.watcherSyncTimer) {
-            clearTimeout(this.watcherSyncTimer);
+            window.clearTimeout(this.watcherSyncTimer);
         }
-        this.watcherSyncTimer = setTimeout(async () => {
-            this.watcherSyncTimer = null;
-            if (this.isSyncing) {
-                debugLog('Watcher sync deferred — sync already in progress');
-                return;
-            }
-            if (this.apiClient.isAuthInvalidated()) {
-                debugLog('Watcher sync skipped — auth invalidated');
-                return;
-            }
-            try {
-                await this.syncAll(false);
-            } catch (error) {
-                console.error('Watcher-triggered sync failed:', error);
-            }
+        this.watcherSyncTimer = window.setTimeout(() => {
+            void (async () => {
+                this.watcherSyncTimer = null;
+                if (this.isSyncing) {
+                    debugLog('Watcher sync deferred — sync already in progress');
+                    return;
+                }
+                if (this.apiClient.isAuthInvalidated()) {
+                    debugLog('Watcher sync skipped — auth invalidated');
+                    return;
+                }
+                try {
+                    await this.syncAll(false);
+                } catch (error) {
+                    console.error('Watcher-triggered sync failed:', error);
+                }
+            })();
         }, this.WATCHER_SYNC_DEBOUNCE_MS);
     }
 
@@ -285,11 +293,13 @@ export class SyncEngine {
 
     private debouncedPersistState(): void {
         if (this.stateSaveTimer) {
-            clearTimeout(this.stateSaveTimer);
+            window.clearTimeout(this.stateSaveTimer);
         }
-        this.stateSaveTimer = setTimeout(async () => {
-            await this.persistState();
-            this.stateSaveTimer = null;
+        this.stateSaveTimer = window.setTimeout(() => {
+            void (async () => {
+                await this.persistState();
+                this.stateSaveTimer = null;
+            })();
         }, this.STATE_SAVE_DEBOUNCE_MS);
     }
 

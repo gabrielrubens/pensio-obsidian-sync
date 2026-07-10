@@ -74,7 +74,7 @@ export interface EntryResponse {
     source: string;
     file_path: string | null;
     file_hash: string;
-    frontmatter: Record<string, any>;
+    frontmatter: Record<string, unknown>;
     primary_emotion: string;
     file_modified_at: string;
     api_last_modified: string | null;
@@ -93,7 +93,7 @@ export interface PersonResponse {
     tags: string[];
     from_locations: string[];
     lived_in: string[];
-    metadata: Record<string, any>;
+    metadata: Record<string, unknown>;
     source: string;
     created_at: string;
     updated_at: string;
@@ -106,7 +106,7 @@ export interface CreateEntryRequest {
     entry_date: string | null;
     entry_type: string;
     file_path: string;  // Always set for plugin-synced entries
-    frontmatter: Record<string, any>;
+    frontmatter: Record<string, unknown>;
     file_modified_at: string;
 }
 
@@ -119,7 +119,7 @@ export interface CreatePersonRequest {
     tags: string[];
     from_locations: string[];
     lived_in: string[];
-    metadata: Record<string, any>;
+    metadata: Record<string, unknown>;
 }
 
 /**

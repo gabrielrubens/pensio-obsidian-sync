@@ -1,4 +1,5 @@
 import { App, FuzzySuggestModal, normalizePath, Notice, PluginSettingTab, Setting, TFolder } from 'obsidian';
+import { errorMessage } from './errors';
 import PensioPlugin from './main';
 
 /**
@@ -102,10 +103,12 @@ export class PensioSettingTab extends PluginSettingTab {
             .addButton(button => button
                 .setButtonText('Browse')
                 .onClick(() => {
-                    new FolderSuggestModal(this.app, async (folder) => {
-                        this.plugin.settings.peopleFolder = folder.path;
-                        await this.plugin.saveSettings();
-                        this.display();
+                    new FolderSuggestModal(this.app, (folder) => {
+                        void (async () => {
+                            this.plugin.settings.peopleFolder = folder.path;
+                            await this.plugin.saveSettings();
+                            this.display();
+                        })();
                     }).open();
                 }));
 
@@ -253,10 +256,12 @@ export class PensioSettingTab extends PluginSettingTab {
             .addButton(button => button
                 .setButtonText('Browse')
                 .onClick(() => {
-                    new FolderSuggestModal(this.app, async (folder) => {
-                        this.plugin.settings.journalFolders[index].folder = folder.path;
-                        await this.plugin.saveSettings();
-                        this.display();
+                    new FolderSuggestModal(this.app, (folder) => {
+                        void (async () => {
+                            this.plugin.settings.journalFolders[index].folder = folder.path;
+                            await this.plugin.saveSettings();
+                            this.display();
+                        })();
                     }).open();
                 }));
 
@@ -310,7 +315,7 @@ export class PensioSettingTab extends PluginSettingTab {
 
         // Token expiry info
         const tokenManager = this.plugin.apiClient.getTokenManager();
-        tokenManager.getTokenExpiry().then(expiry => {
+        void tokenManager.getTokenExpiry().then(expiry => {
             if (expiry) {
                 const timeUntilExpiry = expiry.getTime() - Date.now();
                 const hoursUntilExpiry = Math.floor(timeUntilExpiry / (1000 * 60 * 60));
@@ -459,7 +464,7 @@ export class PensioSettingTab extends PluginSettingTab {
                             }
                             this.display();
                         } catch (error) {
-                            new Notice(`Pairing failed: ${error.message}`);
+                            new Notice(`Pairing failed: ${errorMessage(error)}`);
                             console.error('Pairing failed:', error);
                             button.setDisabled(false);
                             button.setButtonText('Connect');
@@ -502,13 +507,13 @@ export class PensioSettingTab extends PluginSettingTab {
                             button.setButtonText('Connected \u2713');
 
                             // Refresh to show connected state
-                            setTimeout(() => this.display(), 1500);
+                            window.setTimeout(() => this.display(), 1500);
                         } catch (error) {
-                            new Notice(`Connection failed: ${error.message}`);
+                            new Notice(`Connection failed: ${errorMessage(error)}`);
                             button.setButtonText('Failed');
                             console.error('Connection test failed:', error);
                         } finally {
-                            setTimeout(() => {
+                            window.setTimeout(() => {
                                 button.setDisabled(false);
                                 button.setButtonText('Test connection');
                             }, 3000);

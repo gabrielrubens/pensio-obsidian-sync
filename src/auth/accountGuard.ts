@@ -14,6 +14,7 @@
 
 import { Notice } from 'obsidian';
 import { ApiClient } from '../api/client';
+import { toRequestError } from '../errors';
 import { debugLog } from '../logger';
 import { CurrentUserResponse, SyncStateData } from '../types';
 
@@ -55,13 +56,14 @@ export class AccountGuard {
         let currentUser: CurrentUserResponse;
         try {
             currentUser = await apiClient.fetchCurrentUser();
-        } catch (error: any) {
+        } catch (error) {
+            const e = toRequestError(error);
             // Auth errors (401) — let normal auth flow handle it
-            if (error.status === 401) {
+            if (e.status === 401) {
                 return { status: 'error', message: 'Authentication expired' };
             }
             console.error('Account guard: failed to verify identity', error);
-            return { status: 'error', message: error.message || 'Network error' };
+            return { status: 'error', message: e.message ?? 'Network error' };
         }
 
         const account: AccountInfo = {

@@ -1,6 +1,7 @@
 import { Notice, Plugin, setIcon } from 'obsidian';
 import { ApiClient } from './api/client';
 import { AccountGuard } from './auth/accountGuard';
+import { errorMessage } from './errors';
 import { debugLog, setDebugMode } from './logger';
 import { PensioSettingTab } from './settings';
 import { SyncEngine } from './sync/engine';
@@ -10,6 +11,16 @@ import { DEFAULT_SETTINGS, JournalFolderMapping, PensioSettings, SyncStateData }
 interface LegacyFolderMapping extends JournalFolderMapping {
     entryType?: string;
     label?: string;
+}
+
+/**
+ * Shape of the plugin's persisted data.json. Settings fields plus the sync
+ * state and two legacy plaintext-token keys migrated to SecretStorage.
+ */
+interface PersistedData extends Partial<PensioSettings> {
+    _syncState?: SyncStateData | null;
+    apiToken?: string;
+    refreshToken?: string;
 }
 
 type StatusBarState = 'idle' | 'syncing' | 'error' | 'success' | 'reconnect';
@@ -115,11 +126,11 @@ export default class PensioPlugin extends Plugin {
     }
 
     async loadSettings() {
-        const rawData = (await this.loadData()) || {};
+        const rawData = ((await this.loadData()) ?? {}) as PersistedData;
 
         // Extract sync state before merging with settings defaults
-        this._syncState = rawData._syncState || null;
-        const settingsData = { ...rawData };
+        this._syncState = rawData._syncState ?? null;
+        const settingsData: PersistedData = { ...rawData };
         delete settingsData._syncState;
 
         // Migrate legacy plaintext tokens → SecretStorage (one-time)
@@ -131,9 +142,11 @@ export default class PensioPlugin extends Plugin {
             delete settingsData.refreshToken;
             // Save tokens to SecretStorage and clean data.json in background
             // (loadTokens below will prefer these in-memory values)
-            setTimeout(async () => {
-                await this.saveTokens();
-                await this.saveData({ ...this.settings, _syncState: this._syncState });
+            window.setTimeout(() => {
+                void (async () => {
+                    await this.saveTokens();
+                    await this.saveData({ ...this.settings, _syncState: this._syncState });
+                })();
             }, 0);
         }
 
@@ -170,7 +183,7 @@ export default class PensioPlugin extends Plugin {
 
     async saveSettings() {
         // Preserve sync state when saving settings
-        const dataToSave: Record<string, any> = { ...this.settings };
+        const dataToSave: Record<string, unknown> = { ...this.settings };
         if (this._syncState) {
             dataToSave._syncState = this._syncState;
         }
@@ -214,7 +227,7 @@ export default class PensioPlugin extends Plugin {
                     new Notice(`Sync done: ${result.synced} synced, ${result.skipped} unchanged, ${result.total} total files`);
                 } catch (error) {
                     this.updateStatusBar('error');
-                    new Notice(`Sync failed: ${error.message}`);
+                    new Notice(`Sync failed: ${errorMessage(error)}`);
                     console.error('Sync error:', error);
                 }
             }
@@ -236,7 +249,7 @@ export default class PensioPlugin extends Plugin {
                     new Notice(`Force sync done: ${result.synced} synced, ${result.skipped} unchanged, ${result.total} total files`);
                 } catch (error) {
                     this.updateStatusBar('error');
-                    new Notice(`Sync failed: ${error.message}`);
+                    new Notice(`Sync failed: ${errorMessage(error)}`);
                     console.error('Sync error:', error);
                 }
             }
@@ -254,7 +267,7 @@ export default class PensioPlugin extends Plugin {
                 }
 
                 if (!file.path.endsWith('.md')) {
-                    new Notice('Current file is not a markdown file');
+                    new Notice('Current file is not a Markdown file');
                     return;
                 }
 
@@ -270,7 +283,7 @@ export default class PensioPlugin extends Plugin {
                     new Notice(`File sync done: ${result.synced} synced`);
                 } catch (error) {
                     this.updateStatusBar('error');
-                    new Notice(`Sync failed: ${error.message}`);
+                    new Notice(`Sync failed: ${errorMessage(error)}`);
                     console.error('Sync error:', error);
                 }
             }
@@ -292,7 +305,7 @@ export default class PensioPlugin extends Plugin {
                         `Local tracked files: ${trackedFiles}`
                     );
                 } catch (error) {
-                    new Notice(`Failed to get status: ${error.message}`);
+                    new Notice(`Failed to get status: ${errorMessage(error)}`);
                     console.error('Status error:', error);
                 }
             }
@@ -346,11 +359,11 @@ export default class PensioPlugin extends Plugin {
                 break;
             case 'success':
                 this.setStatusBar('check', detail ?? 'Synced');
-                setTimeout(() => this.updateStatusBar('idle'), 3000);
+                window.setTimeout(() => this.updateStatusBar('idle'), 3000);
                 break;
             case 'error':
                 this.setStatusBar('alert-triangle', 'Sync error');
-                setTimeout(() => this.updateStatusBar('idle'), 5000);
+                window.setTimeout(() => this.updateStatusBar('idle'), 5000);
                 break;
             case 'reconnect':
                 this.setStatusBar('cloud-off', 'Reconnect Pensio');
@@ -526,7 +539,7 @@ export default class PensioPlugin extends Plugin {
      */
     private async saveSyncState(state: SyncStateData): Promise<void> {
         this._syncState = state;
-        const dataToSave: Record<string, any> = { ...this.settings };
+        const dataToSave: Record<string, unknown> = { ...this.settings };
         dataToSave._syncState = state;
         await this.saveData(dataToSave);
     }

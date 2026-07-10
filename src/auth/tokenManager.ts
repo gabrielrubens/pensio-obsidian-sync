@@ -32,7 +32,9 @@ function parseJwtExpiry(token: string): number | null {
         const parts = token.split('.');
         if (parts.length !== 3) return null;
         // Base64url decode the payload
-        const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+        const payload = JSON.parse(
+            atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'))
+        ) as { exp?: unknown };
         if (typeof payload.exp === 'number') {
             return payload.exp * 1000; // Convert seconds to milliseconds
         }
@@ -43,7 +45,7 @@ function parseJwtExpiry(token: string): number | null {
 }
 
 function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 /**
@@ -187,7 +189,7 @@ export class TokenManager {
             }
 
             if (response.status >= 200 && response.status < 300) {
-                const data: { access: string; refresh?: string } = response.json;
+                const data = response.json as { access: string; refresh?: string };
 
                 const expiresAt = parseJwtExpiry(data.access) ?? Date.now() + (30 * 60 * 1000);
                 const newTokens: TokenData = {

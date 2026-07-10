@@ -153,7 +153,11 @@ Notes about Sarah...
 
 **Accepted `relationship` values**: `partner`, `family`, `close_friend`, `friend`, `coworker`, `professional`, `acquaintance`, `other`. Legacy formats (e.g., `1:👪 Family`, `Friend`) are normalized automatically on sync.
 
-When you mention someone in a journal entry using `[[wikilinks]]` (e.g., `Had lunch with [[Sarah]]`), Pensio automatically links the mention to their relationship profile — whether the profile was created from the People folder or from a wikilink.
+When you mention someone in a journal entry using a wiki-link, Pensio automatically links the mention to their relationship profile — whether the profile was created from the People folder or from the wiki-link itself. For example:
+
+```md
+Had lunch with [[Sarah]] today — she's doing great.
+```
 
 Configure the People folder path in Settings → Pensio Journaling Sync → Advanced. Set it to empty to disable people sync.
 
@@ -163,7 +167,7 @@ Once your entries sync, Pensio processes them automatically:
 
 - [**60+ emotions extracted**](https://pensio.app/features/emotion-tracking/) — each entry is analyzed for emotional content
 - [**Weekly & monthly insights**](https://pensio.app/features/insights/) — AI-generated reflections on patterns in your writing
-- [**Relationship profiles**](https://pensio.app/features/relationships/) — people mentioned via `[[wikilinks]]` are tracked and profiled
+- [**Relationship profiles**](https://pensio.app/features/relationships/) — people mentioned via wiki-links are tracked and profiled
 - [**Explore AI**](https://pensio.app/features/explore/) — ask questions about your entire journal history and get answers grounded in your entries
 - [**Constellation**](https://pensio.app/features/constellation/) — visual map of how your entries connect through themes, emotions, and people
 
