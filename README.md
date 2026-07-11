@@ -15,6 +15,8 @@ Sync your journal to [Pensio](https://pensio.app) for AI-powered journaling insi
 
 This plugin connects your Obsidian vault to Pensio so you can keep writing in your favorite editor while Pensio adds the intelligence layer on top.
 
+![Pensio Journaling Sync settings in Obsidian — connect with a one-time setup code and choose which folders to sync](https://raw.githubusercontent.com/gabrielrubens/pensio-obsidian-sync/main/docs/screenshot.png)
+
 ## Features
 
 - **Automatic sync** — syncs when files change, or on a 5-minute interval
