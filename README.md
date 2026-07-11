@@ -2,10 +2,7 @@
 
 Sync your journal to [Pensio](https://pensio.app) for AI-powered journaling insights: emotion and mood tracking, relationship mapping, and weekly reflections on your notes.
 
-> **Beta** — Pensio Journaling Sync is in open beta. It is stable in daily use, and we're
-> actively polishing based on feedback. Install via [BRAT](#brat-recommended)
-> today, or from Community Plugins once the listing is approved. Found
-> something? [Open an issue](https://github.com/gabrielrubens/pensio-obsidian-sync/issues).
+> **Available in the [Obsidian Community Plugins directory](https://community.obsidian.md/plugins/pensio-sync).** Install it in a couple of clicks (see [Installation](#installation)). Questions or a bug? [Open an issue](https://github.com/gabrielrubens/pensio-obsidian-sync/issues).
 
 > **Required disclosures** (per [Obsidian developer policies](https://docs.obsidian.md/Developer+policies)):
 > - **Account required** — A free [Pensio](https://pensio.app) account is needed.
@@ -33,16 +30,17 @@ This plugin connects your Obsidian vault to Pensio so you can keep writing in yo
 
 ## Installation
 
-### BRAT (recommended)
+### From Community Plugins (recommended)
 
-1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from Community Plugins
-2. In BRAT settings, click **Add Beta plugin**
-3. Enter: `gabrielrubens/pensio-obsidian-sync`
-4. Enable the plugin in Settings → Community plugins
+1. In Obsidian, open **Settings → Community plugins** and click **Browse**
+2. Search for **Pensio Journaling Sync**
+3. Click **Install**, then **Enable**
 
-### Community Plugins
+Or open the [directory listing](https://community.obsidian.md/plugins/pensio-sync) and use "Install".
 
-*Coming soon* — Pensio Journaling Sync will be listed in the Obsidian Community Plugins directory after its beta review. Until then, use BRAT (above) — it auto-updates just like a directory install.
+### Beta / pre-release builds (BRAT)
+
+Want the newest build before it reaches the directory? Install [BRAT](https://github.com/TfTHacker/obsidian42-brat), choose **Add beta plugin**, and enter `gabrielrubens/pensio-obsidian-sync`.
 
 ### Manual
 
