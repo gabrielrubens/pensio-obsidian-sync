@@ -62,6 +62,8 @@ export interface PairResponse {
 export interface SyncStatusResponse {
     last_sync: string | null;
     total_entries: number;
+    /** Optional: absent on Pensio servers older than v0.61.0. */
+    processing_status?: ProcessingStatus;
 }
 
 export interface EntryResponse {
@@ -132,6 +134,23 @@ export interface BulkSyncItem {
 }
 
 /**
+ * Emotion-analysis quota status, as reported by the bulk-sync endpoint.
+ *
+ * Free accounts have a daily cap; Pro is unlimited and reports
+ * `daily_limit: 0` / `remaining_today: -1`.
+ */
+export interface ProcessingStatus {
+    /** Entries analyzed today. */
+    processed_today: number;
+    /** Daily cap. 0 means unlimited (Pro). */
+    daily_limit: number;
+    /** Entries left in today's quota. -1 means unlimited (Pro). */
+    remaining_today: number;
+    /** Entries synced but not yet analyzed. */
+    pending: number;
+}
+
+/**
  * Bulk sync response
  */
 export interface BulkSyncResponse {
@@ -150,6 +169,12 @@ export interface BulkSyncResponse {
         errors: Array<{ file_path: string; error: string }>;
     };
     total_time_ms: number;
+    /**
+     * Optional: omitted by Pensio servers older than v0.5.3 and by
+     * self-hosted instances that have not updated. Treat absence as
+     * "unknown", never as "unlimited".
+     */
+    processing_status?: ProcessingStatus;
 }
 
 /**
@@ -163,6 +188,12 @@ export interface SyncStateData {
     lastSyncTime: number | null;
     /** Per-file tracking: path → hash + mtime */
     files: Record<string, SyncedFileInfo>;
+    /**
+     * UTC day (YYYY-MM-DD) the quota notice was last shown, so the reminder
+     * survives plugin reloads instead of firing again on every startup.
+     * Absent on state written before this field existed.
+     */
+    lastQuotaNoticeDay?: string | null;
 }
 
 /**

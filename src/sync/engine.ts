@@ -1,7 +1,7 @@
 import { App, TAbstractFile, TFile } from 'obsidian';
 import { ApiClient } from '../api/client';
 import { debugLog } from '../logger';
-import { BulkSyncItem, PensioSettings, SyncedFileInfo, SyncStateData } from '../types';
+import { BulkSyncItem, PensioSettings, ProcessingStatus, SyncedFileInfo, SyncStateData } from '../types';
 import { computeContentHash } from './hash';
 import { extractDateFromFilename, parseMarkdown } from './parser';
 
@@ -35,6 +35,20 @@ export class SyncEngine {
     private syncedFiles: Map<string, SyncedFileInfo> = new Map();
     private stateSaveTimer: number | null = null;
     private userId: string | null = null;
+
+    // Emotion-analysis quota, as last reported by the bulk endpoint. The most
+    // recent chunk of a sync wins, so after a big import this holds the state
+    // once every entry has landed.
+    private lastProcessingStatus: ProcessingStatus | null = null;
+    private lastQuotaNoticeDay: string | null = null;
+
+    /**
+     * Called after any sync that learned the quota status — including the
+     * silent automatic ones. Auto-sync is the path that matters: it is on by
+     * default and shows no Notice, so a first import happens entirely without
+     * user-visible feedback unless something reports back here.
+     */
+    onProcessingStatus: ((status: ProcessingStatus) => void) | null = null;
 
     // Bind handlers once to preserve reference for cleanup
     private readonly boundOnFileChanged: (file: TAbstractFile) => void;
@@ -242,6 +256,7 @@ export class SyncEngine {
     restoreState(state: SyncStateData): void {
         this.userId = state.userId ?? null;
         this.lastSyncTime = state.lastSyncTime;
+        this.lastQuotaNoticeDay = state.lastQuotaNoticeDay ?? null;
         // Rebuild the tracking map with explicit types so the entries never
         // widen to `any` under a minimal DOM/ES lib (Object.entries needs
         // ES2017 typings the review bot's checker may not resolve).
@@ -267,7 +282,12 @@ export class SyncEngine {
         for (const [path, info] of this.syncedFiles) {
             files[path] = { hash: info.hash, mtime: info.mtime };
         }
-        return { userId: this.userId, lastSyncTime: this.lastSyncTime, files };
+        return {
+            userId: this.userId,
+            lastSyncTime: this.lastSyncTime,
+            files,
+            lastQuotaNoticeDay: this.lastQuotaNoticeDay,
+        };
     }
 
     clearState(): void {
@@ -275,6 +295,50 @@ export class SyncEngine {
         this.userId = null;
         this.lastSyncTime = null;
         this.syncedFiles.clear();
+        // A different account has a different tier and quota — the previous
+        // account's "already told them today" must not silence the new one.
+        this.lastProcessingStatus = null;
+        this.lastQuotaNoticeDay = null;
+    }
+
+    /** Last known emotion-analysis quota, or null if never reported. */
+    getLastProcessingStatus(): ProcessingStatus | null {
+        return this.lastProcessingStatus;
+    }
+
+    /** UTC day the quota notice was last shown, for once-a-day deduping. */
+    getLastQuotaNoticeDay(): string | null {
+        return this.lastQuotaNoticeDay;
+    }
+
+    /** Record that the quota notice was shown today, and persist it. */
+    markQuotaNoticeShown(day: string): void {
+        this.lastQuotaNoticeDay = day;
+        void this.persistState();
+    }
+
+    /**
+     * Remember the quota reported by one bulk chunk.
+     *
+     * Absent on older/self-hosted backends — keep the previous value rather
+     * than clobbering it with null, so an upgraded server that stops
+     * answering mid-sync does not erase what we already knew.
+     */
+    private captureProcessingStatus(status?: ProcessingStatus): void {
+        if (status) {
+            this.lastProcessingStatus = status;
+        }
+    }
+
+    /** Hand the freshest quota reading to whoever is listening. */
+    private notifyProcessingStatus(): void {
+        if (this.lastProcessingStatus && this.onProcessingStatus) {
+            try {
+                this.onProcessingStatus(this.lastProcessingStatus);
+            } catch (error) {
+                console.error('Processing-status handler failed:', error);
+            }
+        }
     }
 
     setUserId(userId: string): void {
@@ -436,6 +500,7 @@ export class SyncEngine {
                 const chunk = entryItems.slice(i, i + BULK_CHUNK_SIZE);
                 try {
                     const result = await this.apiClient.bulkSync(chunk, []);
+                    this.captureProcessingStatus(result.processing_status);
                     debugLog(`Bulk entries ${i + 1}-${i + chunk.length}: ` +
                         `${result.entries.created} created, ${result.entries.updated} updated`);
 
@@ -466,6 +531,7 @@ export class SyncEngine {
                 const chunk = peopleItems.slice(i, i + BULK_CHUNK_SIZE);
                 try {
                     const result = await this.apiClient.bulkSync([], chunk);
+                    this.captureProcessingStatus(result.processing_status);
                     debugLog(`Bulk people ${i + 1}-${i + chunk.length}: ` +
                         `${result.people.created} created, ${result.people.updated} updated`);
 
@@ -511,6 +577,10 @@ export class SyncEngine {
             }
 
             await this.persistState();
+
+            // Report the quota before any error throw — a sync that failed on
+            // a few files still learned whether the account is capped.
+            this.notifyProcessingStatus();
 
             if (errors.length > 0) {
                 throw new Error(`Sync completed with ${errors.length} error(s): ${errors[0]}`);

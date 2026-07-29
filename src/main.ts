@@ -5,7 +5,8 @@ import { errorMessage } from './errors';
 import { debugLog, setDebugMode } from './logger';
 import { PensioSettingTab } from './settings';
 import { SyncEngine } from './sync/engine';
-import { DEFAULT_SETTINGS, JournalFolderMapping, PensioSettings, SyncStateData } from './types';
+import { quotaDayKey, quotaNoticeMessage, quotaSummaryLine, shouldNotifyQuota } from './sync/quotaNotice';
+import { DEFAULT_SETTINGS, JournalFolderMapping, PensioSettings, ProcessingStatus, SyncStateData } from './types';
 
 /** Pre-0.3.0 folder mappings carried extra per-folder fields. */
 interface LegacyFolderMapping extends JournalFolderMapping {
@@ -96,6 +97,11 @@ export default class PensioPlugin extends Plugin {
         if (this._syncState) {
             this.syncEngine.restoreState(this._syncState);
         }
+
+        // Surface the free-tier analysis quota. Auto-sync is on by default and
+        // silent, so without this a first import of a large vault finishes
+        // with no indication that analysis will take weeks.
+        this.syncEngine.onProcessingStatus = (status) => this.handleProcessingStatus(status);
 
         // Snapshot current tokens for change detection
         this._previousTokenFingerprint = this.tokenFingerprint();
@@ -301,10 +307,16 @@ export default class PensioPlugin extends Plugin {
                     const account = this.accountGuard.getAccount();
                     const accountLine = account ? `Account: ${account.email}\n` : '';
                     const trackedFiles = this.syncEngine.getTrackedFileCount();
+                    // Prefer the value this call just fetched; fall back to
+                    // the last sync's reading on older servers.
+                    const quotaLine = quotaSummaryLine(
+                        status.processing_status ?? this.syncEngine.getLastProcessingStatus()
+                    );
                     new Notice(
                         `${accountLine}` +
                         `Server entries: ${status.total_entries}\n` +
-                        `Local tracked files: ${trackedFiles}`
+                        `Local tracked files: ${trackedFiles}` +
+                        (quotaLine ? `\n${quotaLine}` : '')
                     );
                 } catch (error) {
                     new Notice(`Failed to get status: ${errorMessage(error)}`);
@@ -371,6 +383,31 @@ export default class PensioPlugin extends Plugin {
                 this.setStatusBar('cloud-off', 'Reconnect Pensio');
                 break;
         }
+    }
+
+    /**
+     * Tell the user, at most once a day, that the free daily analysis cap is
+     * spent and roughly how long the backlog will take.
+     *
+     * Deliberately once per quota day: sync runs on a five-minute timer, and
+     * "you are still over quota" is an unchanging state, not news. Repeating
+     * it every tick is the same mistake the server-side throttle event made.
+     */
+    private handleProcessingStatus(status: ProcessingStatus): void {
+        const day = quotaDayKey();
+        if (!shouldNotifyQuota(status, this.syncEngine.getLastQuotaNoticeDay())) {
+            return;
+        }
+
+        this.syncEngine.markQuotaNoticeShown(day);
+
+        const notice = new Notice(quotaNoticeMessage(status), 20000);
+        // noticeEl is absent under the test mock — optional chaining keeps the
+        // message itself working even if the click target is unavailable.
+        const apiUrl = this.settings.apiUrl;
+        (notice as { noticeEl?: HTMLElement })?.noticeEl?.addEventListener('click', () => {
+            window.open(`${apiUrl}/pricing/`);
+        });
     }
 
     private setStatusBar(icon: string, text: string): void {

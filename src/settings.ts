@@ -1,6 +1,7 @@
 import { App, FuzzySuggestModal, normalizePath, Notice, PluginSettingTab, Setting, TFolder } from 'obsidian';
 import { errorMessage } from './errors';
 import PensioPlugin from './main';
+import { isThrottled, quotaSummaryLine } from './sync/quotaNotice';
 
 /**
  * Folder suggest modal for selecting folders
@@ -326,6 +327,18 @@ export class PensioSettingTab extends PluginSettingTab {
             }
         });
 
+        // Emotion-analysis quota — the free tier analyzes a fixed number of
+        // entries per day, so a freshly imported vault drains over weeks.
+        // This is the durable answer to "why is nothing happening?"; the
+        // once-a-day Notice is the prompt, this is the reference.
+        //
+        // Fetched fresh rather than read from the sync engine's cache: after
+        // the initial import there is nothing left to push, so syncs stop
+        // calling the bulk endpoint entirely and the cached reading would
+        // stay frozen at import-day numbers for the whole drain.
+        const quotaEl = containerEl.createDiv();
+        void this.renderQuotaStatus(quotaEl, apiUrl);
+
         // Quick actions
         new Setting(containerEl)
             .setName('Open Pensio')
@@ -356,6 +369,45 @@ export class PensioSettingTab extends PluginSettingTab {
                     await this.plugin.logout();
                     this.display();
                 }));
+    }
+
+    /**
+     * Emotion-analysis quota line, plus an upgrade prompt when it is spent.
+     *
+     * Silent on failure: this is supplementary information, and a server that
+     * is too old to report the quota (or briefly unreachable) should not put
+     * an error in the middle of a working settings page.
+     */
+    private async renderQuotaStatus(containerEl: HTMLElement, apiUrl: string): Promise<void> {
+        let status = this.plugin.syncEngine.getLastProcessingStatus();
+        try {
+            const fresh = await this.plugin.apiClient.getSyncStatus();
+            if (fresh.processing_status) {
+                status = fresh.processing_status;
+            }
+        } catch {
+            // Keep whatever the last sync reported, if anything.
+        }
+
+        const line = quotaSummaryLine(status);
+        if (!line) return;
+
+        containerEl.createEl('p', { text: line, cls: 'pensio-token-status' });
+
+        if (status && isThrottled(status)) {
+            new Setting(containerEl)
+                .setName('Analysis is rate-limited')
+                .setDesc(
+                    'Your notes are synced and safe. Free accounts analyze ' +
+                    `${status.daily_limit} entries per day — Pro analyzes them all at once.`
+                )
+                .addButton(button => button
+                    .setButtonText('Upgrade to Pro')
+                    .setCta()
+                    .onClick(() => {
+                        window.open(`${apiUrl}/pricing/`);
+                    }));
+        }
     }
 
     /**
