@@ -172,17 +172,23 @@ export class ApiClient {
     async pair(
         code: string,
         deviceId: string,
-        deviceName: string
+        deviceName: string,
+        previousRefresh = ''
     ): Promise<PairResponse> {
         const baseUrl = (this.settings.apiUrl || 'https://pensio.app').replace('://www.', '://');
         const response = await requestUrl({
             url: `${baseUrl}/api/v1/auth/pair/`,
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            // The refresh token this vault already holds, so the server ends
+            // exactly the connection this pairing replaces. Another machine on
+            // a synced vault shares the device id but keeps its own tokens, so
+            // it is never the one ended. Sent only when there is one.
             body: JSON.stringify({
                 code,
                 device_id: deviceId,
                 device_name: deviceName,
+                ...(previousRefresh ? { previous_refresh: previousRefresh } : {}),
             }),
             throw: false,
         });

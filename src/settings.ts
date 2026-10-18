@@ -504,7 +504,9 @@ export class PensioSettingTab extends PluginSettingTab {
 
                             const deviceId = await this.plugin.ensureDeviceId();
                             const deviceName = `Obsidian \u2014 ${this.app.vault.getName()}`;
-                            const result = await this.plugin.apiClient.pair(code, deviceId, deviceName);
+                            const result = await this.plugin.apiClient.pair(
+                                code, deviceId, deviceName, this.plugin.getRefreshToken()
+                            );
                             await this.plugin.setTokens(result.access, result.refresh);
 
                             const verified = await this.plugin.verifyAccountBeforeSync();
