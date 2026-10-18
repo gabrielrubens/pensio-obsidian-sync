@@ -411,7 +411,12 @@ export class PensioSettingTab extends PluginSettingTab {
     }
 
     /**
-     * Tokens present but not yet verified — show test button prominently.
+     * Tokens present but not yet verified: test them, or pair again.
+     *
+     * ⛔ This state used to offer only Test connection. Tokens that no longer
+     * work (the connection was removed on the web, or they were pasted wrong)
+     * land here, and with no setup-code field there was no way back short of
+     * clearing the token fields under Advanced. So it offers both.
      */
     private renderUnverifiedState(containerEl: HTMLElement, apiUrl: string): void {
         const card = containerEl.createDiv({ cls: 'pensio-account-card' });
@@ -420,6 +425,17 @@ export class PensioSettingTab extends PluginSettingTab {
         statusRow.createSpan({ text: 'Tokens entered \u2014 not yet verified', cls: 'pensio-account-email' });
 
         this.renderTestButton(containerEl);
+
+        const hint = card.createEl('p', { cls: 'pensio-token-status' });
+        hint.appendText('Removed this connection, or it stopped working? Open ');
+        const pairLink = hint.createEl('a', {
+            text: 'Connect Obsidian',
+            href: `${apiUrl}/tokens/pair-obsidian/`,
+        });
+        pairLink.setAttr('target', '_blank');
+        hint.appendText(' and enter a new setup code below.');
+
+        this.renderPairingSetting(containerEl, apiUrl);
     }
 
     /**
@@ -551,6 +567,8 @@ export class PensioSettingTab extends PluginSettingTab {
                             if (!verified) {
                                 new Notice('Connection failed: could not verify account');
                                 button.setButtonText('Failed');
+                                // A refused token flips the tab to its reconnect state.
+                                window.setTimeout(() => this.display(), 1500);
                                 return;
                             }
 
@@ -566,6 +584,7 @@ export class PensioSettingTab extends PluginSettingTab {
                             new Notice(`Connection failed: ${errorMessage(error)}`);
                             button.setButtonText('Failed');
                             console.error('Connection test failed:', error);
+                            window.setTimeout(() => this.display(), 1500);
                         } finally {
                             window.setTimeout(() => {
                                 button.setDisabled(false);
