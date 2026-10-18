@@ -1,9 +1,21 @@
 name: Release Obsidian plugin
 
+# Two ways in:
+#   - pushing a tag (the usual path) makes a DRAFT release for that tag;
+#   - running it by hand with a version makes the tag AND publishes the
+#     release, from the head of main. That path exists for a session whose
+#     network refuses tag pushes; it refuses a version the manifest does not
+#     declare, so it can never tag the wrong commit.
+
 on:
   push:
     tags:
       - "*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (must equal manifest.json's version, e.g. 0.5.1)"
+        required: true
 
 jobs:
   build:
@@ -18,6 +30,21 @@ jobs:
         with:
           node-version: "18.x"
 
+      - name: Refuse a version the manifest does not declare
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          declared="$(node -p "require('./manifest.json').version")"
+          if [ "$VERSION" != "$declared" ]; then
+            echo "::error::asked for $VERSION but manifest.json declares $declared"
+            exit 1
+          fi
+          if git ls-remote --exit-code origin "refs/tags/$VERSION" >/dev/null; then
+            echo "::error::tag $VERSION already exists"
+            exit 1
+          fi
+
       - name: Build plugin
         run: |
           npm install
@@ -26,10 +53,18 @@ jobs:
       - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            gh release create "$VERSION" \
+              --title="$VERSION" \
+              --target="$GITHUB_SHA" \
+              main.js manifest.json styles.css
+          else
+            tag="${GITHUB_REF#refs/tags/}"
 
-          gh release create "$tag" \
-            --title="$tag" \
-            --draft \
-            main.js manifest.json styles.css
+            gh release create "$tag" \
+              --title="$tag" \
+              --draft \
+              main.js manifest.json styles.css
+          fi
