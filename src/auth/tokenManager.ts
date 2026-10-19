@@ -277,6 +277,16 @@ export class TokenManager {
     }
 
     /**
+     * Flip to the reconnect state on the person's say-so (Test connection got
+     * a 401 the refresh could not cure). Never called from a background sync:
+     * a 401 there can follow a transient refresh failure, and a sync must not
+     * strand a connection that the next refresh would have saved.
+     */
+    invalidate(): void {
+        this.markAuthInvalid();
+    }
+
+    /**
      * Called by the API client after a request got a 401: try one refresh.
      * Returns the new tokens, or null when the request should not be retried.
      * Never wipes tokens.

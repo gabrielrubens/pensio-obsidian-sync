@@ -166,8 +166,7 @@ export class ApiClient {
 
     /**
      * Exchange a one-time setup code (minted on the Pensio token page) for a
-     * fresh per-device token family. Unauthenticated by design — the code is
-     * the credential — so it bypasses request()/getAccessToken().
+     * fresh per-device token family.
      */
     async pair(
         code: string,
@@ -175,9 +174,45 @@ export class ApiClient {
         deviceName: string,
         previousRefresh = ''
     ): Promise<PairResponse> {
+        return this.exchangeForTokens('/api/v1/auth/pair/', {
+            code,
+            device_id: deviceId,
+            device_name: deviceName,
+        }, previousRefresh, 'Pairing failed — check the code and try again');
+    }
+
+    /**
+     * The second half of the one-click connect: the code Obsidian received at
+     * obsidian://pensio-connect, and the PKCE verifier only this plugin holds
+     * (src/auth/oneClick.ts). The vault's name is the one she approved, so it
+     * is not sent again.
+     */
+    async connectWithCode(
+        code: string,
+        verifier: string,
+        deviceId: string,
+        previousRefresh = ''
+    ): Promise<PairResponse> {
+        return this.exchangeForTokens('/api/v1/auth/connect/', {
+            code,
+            verifier,
+            device_id: deviceId,
+        }, previousRefresh, 'Connecting failed — press Connect again');
+    }
+
+    /**
+     * Both doors are unauthenticated by design — the code is the credential —
+     * so they bypass request()/getAccessToken().
+     */
+    private async exchangeForTokens(
+        endpoint: string,
+        fields: Record<string, string>,
+        previousRefresh: string,
+        fallbackMessage: string
+    ): Promise<PairResponse> {
         const baseUrl = (this.settings.apiUrl || 'https://pensio.app').replace('://www.', '://');
         const response = await requestUrl({
-            url: `${baseUrl}/api/v1/auth/pair/`,
+            url: `${baseUrl}${endpoint}`,
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             // The refresh token this vault already holds, so the server ends
@@ -185,9 +220,7 @@ export class ApiClient {
             // a synced vault shares the device id but keeps its own tokens, so
             // it is never the one ended. Sent only when there is one.
             body: JSON.stringify({
-                code,
-                device_id: deviceId,
-                device_name: deviceName,
+                ...fields,
                 ...(previousRefresh ? { previous_refresh: previousRefresh } : {}),
             }),
             throw: false,
@@ -197,7 +230,7 @@ export class ApiClient {
             return response.json as PairResponse;
         }
 
-        let message = 'Pairing failed — check the code and try again';
+        let message = fallbackMessage;
         try {
             const apiError = response.json as ApiError;
             message = apiError.error?.fields?.code?.[0]
@@ -267,6 +300,23 @@ export class ApiClient {
 
     async logout(): Promise<void> {
         await this.tokenManager.clearTokens();
+    }
+
+    /**
+     * Stop this vault's connection on the server: the family the presented
+     * token belongs to, and nothing else — a second machine on the same synced
+     * vault keeps its own (api/tokens.py::stop_the_calling_family).
+     */
+    async disconnect(): Promise<void> {
+        await this.request<void>('POST', '/api/v1/auth/disconnect/');
+    }
+
+    /**
+     * The person pressed Test connection and the server still said 401 after a
+     * refresh: show the reconnect state rather than a bare "Failed".
+     */
+    markAuthInvalidated(): void {
+        this.tokenManager.invalidate();
     }
 
     async isAuthenticated(): Promise<boolean> {

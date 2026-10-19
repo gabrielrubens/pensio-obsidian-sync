@@ -1,7 +1,6 @@
-import { App, FuzzySuggestModal, normalizePath, Notice, PluginSettingTab, Setting, TFolder } from 'obsidian';
-import { errorMessage } from './errors';
+import { App, FuzzySuggestModal, normalizePath, PluginSettingTab, Setting, TFolder } from 'obsidian';
+import { ConnectionSection } from './connectionSection';
 import PensioPlugin from './main';
-import { isThrottled, quotaSummaryLine } from './sync/quotaNotice';
 
 /**
  * Folder suggest modal for selecting folders
@@ -42,10 +41,12 @@ class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
 
 export class PensioSettingTab extends PluginSettingTab {
     plugin: PensioPlugin;
+    private connection: ConnectionSection;
 
     constructor(app: App, plugin: PensioPlugin) {
         super(app, plugin);
         this.plugin = plugin;
+        this.connection = new ConnectionSection(plugin, () => this.display());
     }
 
     display(): void {
@@ -59,7 +60,7 @@ export class PensioSettingTab extends PluginSettingTab {
         // --- Connection ---
         new Setting(containerEl).setName('Connection').setHeading();
 
-        this.renderConnectionStatus(containerEl);
+        this.connection.render(containerEl);
 
         // --- Sync folders ---
         new Setting(containerEl).setName('Sync folders').setHeading();
@@ -209,7 +210,7 @@ export class PensioSettingTab extends PluginSettingTab {
                 text.inputEl.type = 'password';
             });
 
-        this.renderTestButton(containerEl);
+        this.connection.renderTestButton(containerEl);
     }
 
     /**
@@ -279,319 +280,4 @@ export class PensioSettingTab extends PluginSettingTab {
         }
     }
 
-    /**
-     * Render the connection section with two distinct states:
-     * - Disconnected: getting-started guide + token paste fields + test button
-     * - Connected: account card with email, action buttons, token management
-     */
-    private renderConnectionStatus(containerEl: HTMLElement): void {
-        const apiUrl = (this.plugin.settings.apiUrl || 'https://pensio.app').replace(/\/+$/, '');
-        const hasBothTokens = this.plugin.getAccessToken() && this.plugin.getRefreshToken();
-        const account = this.plugin.accountGuard.getAccount();
-
-        if (hasBothTokens && this.plugin.apiClient.isAuthInvalidated()) {
-            // ── Session dead (server-confirmed) — reconnect without data loss ──
-            this.renderReconnectState(containerEl, apiUrl);
-        } else if (hasBothTokens && account) {
-            // ── Connected state ──
-            this.renderConnectedState(containerEl, apiUrl, account);
-        } else if (hasBothTokens) {
-            // ── Tokens present but not verified ──
-            this.renderUnverifiedState(containerEl, apiUrl);
-        } else {
-            // ── Disconnected state ──
-            this.renderDisconnectedState(containerEl, apiUrl);
-        }
-    }
-
-    /**
-     * Connected: show account info card with quick actions.
-     */
-    private renderConnectedState(containerEl: HTMLElement, apiUrl: string, account: { email: string }): void {
-        // Account info card
-        const card = containerEl.createDiv({ cls: 'pensio-account-card' });
-        const statusRow = card.createDiv({ cls: 'pensio-account-status' });
-        statusRow.createSpan({ text: '\u2713', cls: 'pensio-status-dot pensio-status-connected' });
-        statusRow.createSpan({ text: `Connected as ${account.email}`, cls: 'pensio-account-email' });
-
-        // Token expiry info
-        const tokenManager = this.plugin.apiClient.getTokenManager();
-        void tokenManager.getTokenExpiry().then(expiry => {
-            if (expiry) {
-                const timeUntilExpiry = expiry.getTime() - Date.now();
-                const hoursUntilExpiry = Math.floor(timeUntilExpiry / (1000 * 60 * 60));
-                const expiryText = hoursUntilExpiry > 0
-                    ? `Token expires in ${hoursUntilExpiry}h \u2014 auto-refreshes`
-                    : 'Token expired \u2014 will auto-refresh on next sync';
-                card.createEl('p', { text: expiryText, cls: 'pensio-token-status' });
-            }
-        });
-
-        // Emotion-analysis quota — the free tier analyzes a fixed number of
-        // entries per day, so a freshly imported vault drains over weeks.
-        // This is the durable answer to "why is nothing happening?"; the
-        // once-a-day Notice is the prompt, this is the reference.
-        //
-        // Fetched fresh rather than read from the sync engine's cache: after
-        // the initial import there is nothing left to push, so syncs stop
-        // calling the bulk endpoint entirely and the cached reading would
-        // stay frozen at import-day numbers for the whole drain.
-        const quotaEl = containerEl.createDiv();
-        void this.renderQuotaStatus(quotaEl, apiUrl);
-
-        // Quick actions
-        new Setting(containerEl)
-            .setName('Open Pensio')
-            .setDesc('View your journal, insights, and AI chat on the web')
-            .addButton(button => button
-                .setButtonText('Open web app')
-                .onClick(() => {
-                    window.open(`${apiUrl}/dashboard/`);
-                }));
-
-        new Setting(containerEl)
-            .setName('Manage devices')
-            .setDesc('Review or revoke connected devices and tokens')
-            .addButton(button => button
-                .setButtonText('Token page')
-                .onClick(() => {
-                    window.open(`${apiUrl}/tokens/`);
-                }));
-
-        // Logout
-        new Setting(containerEl)
-            .setName('Logout')
-            .setDesc('Clear tokens and sync state from this device')
-            .addButton(button => button
-                .setButtonText('Logout')
-                .setWarning()
-                .onClick(async () => {
-                    await this.plugin.logout();
-                    this.display();
-                }));
-    }
-
-    /**
-     * Emotion-analysis quota line, plus an upgrade prompt when it is spent.
-     *
-     * Silent on failure: this is supplementary information, and a server that
-     * is too old to report the quota (or briefly unreachable) should not put
-     * an error in the middle of a working settings page.
-     */
-    private async renderQuotaStatus(containerEl: HTMLElement, apiUrl: string): Promise<void> {
-        let status = this.plugin.syncEngine.getLastProcessingStatus();
-        try {
-            const fresh = await this.plugin.apiClient.getSyncStatus();
-            if (fresh.processing_status) {
-                status = fresh.processing_status;
-            }
-        } catch {
-            // Keep whatever the last sync reported, if anything.
-        }
-
-        const line = quotaSummaryLine(status);
-        if (!line) return;
-
-        containerEl.createEl('p', { text: line, cls: 'pensio-token-status' });
-
-        if (status && isThrottled(status)) {
-            new Setting(containerEl)
-                .setName('Analysis is rate-limited')
-                .setDesc(
-                    'Your notes are synced and safe. Free accounts analyze ' +
-                    `${status.daily_limit} entries per day — Pro analyzes them all at once.`
-                )
-                .addButton(button => button
-                    .setButtonText('Upgrade to Pro')
-                    .setCta()
-                    .onClick(() => {
-                        window.open(`${apiUrl}/pricing/`);
-                    }));
-        }
-    }
-
-    /**
-     * Tokens present but not yet verified: test them, or pair again.
-     *
-     * ⛔ This state used to offer only Test connection. Tokens that no longer
-     * work (the connection was removed on the web, or they were pasted wrong)
-     * land here, and with no setup-code field there was no way back short of
-     * clearing the token fields under Advanced. So it offers both.
-     */
-    private renderUnverifiedState(containerEl: HTMLElement, apiUrl: string): void {
-        const card = containerEl.createDiv({ cls: 'pensio-account-card' });
-        const statusRow = card.createDiv({ cls: 'pensio-account-status' });
-        statusRow.createSpan({ text: '\u25CB', cls: 'pensio-status-dot pensio-status-pending' });
-        statusRow.createSpan({ text: 'Tokens entered \u2014 not yet verified', cls: 'pensio-account-email' });
-
-        this.renderTestButton(containerEl);
-
-        const hint = card.createEl('p', { cls: 'pensio-token-status' });
-        hint.appendText('Removed this connection, or it stopped working? Open ');
-        const pairLink = hint.createEl('a', {
-            text: 'Connect Obsidian',
-            href: `${apiUrl}/tokens/pair-obsidian/`,
-        });
-        pairLink.setAttr('target', '_blank');
-        hint.appendText(' and enter a new setup code below.');
-
-        this.renderPairingSetting(containerEl, apiUrl);
-    }
-
-    /**
-     * Session dead (server-confirmed): tokens are kept, nothing was deleted —
-     * a new setup code reconnects without touching sync state.
-     */
-    private renderReconnectState(containerEl: HTMLElement, apiUrl: string): void {
-        const card = containerEl.createDiv({ cls: 'pensio-account-card' });
-        const statusRow = card.createDiv({ cls: 'pensio-account-status' });
-        statusRow.createSpan({ text: '\u26A0', cls: 'pensio-status-dot pensio-status-pending' });
-        statusRow.createSpan({ text: 'Session expired \u2014 reconnect to resume syncing', cls: 'pensio-account-email' });
-        card.createEl('p', {
-            text: 'Your notes and sync history are untouched. Enter a new setup code to reconnect.',
-            cls: 'pensio-token-status',
-        });
-
-        this.renderPairingSetting(containerEl, apiUrl);
-    }
-
-    /**
-     * Disconnected: getting-started onboarding + setup-code pairing.
-     */
-    private renderDisconnectedState(containerEl: HTMLElement, apiUrl: string): void {
-        const gettingStarted = containerEl.createDiv({ cls: 'pensio-getting-started' });
-        const steps = gettingStarted.createEl('p');
-        steps.appendText('To connect this plugin you need a Pensio account and a setup code.');
-
-        const stepList = gettingStarted.createEl('ol');
-
-        const step1 = stepList.createEl('li');
-        const signupLink = step1.createEl('a', {
-            text: 'Create a free Pensio account',
-            href: `${apiUrl}/register/`,
-        });
-        signupLink.setAttr('target', '_blank');
-        step1.appendText(' (if you don\u2019t have one)');
-
-        const step2 = stepList.createEl('li');
-        step2.appendText('Open ');
-        const pairLink = step2.createEl('a', {
-            text: 'Connect Obsidian',
-            href: `${apiUrl}/tokens/pair-obsidian/`,
-        });
-        pairLink.setAttr('target', '_blank');
-        step2.appendText(' and generate a setup code');
-
-        const step3 = stepList.createEl('li');
-        step3.appendText('Enter the code below and click Connect');
-
-        this.renderPairingSetting(containerEl, apiUrl);
-    }
-
-    /**
-     * The setup-code field + Connect button (shared by the disconnected and
-     * reconnect states). Exchanges the code for a fresh per-device token
-     * family via POST /api/v1/auth/pair/.
-     */
-    private renderPairingSetting(containerEl: HTMLElement, apiUrl: string): void {
-        let code = '';
-        new Setting(containerEl)
-            .setName('Setup code')
-            .setDesc('One-time code from the Connect Obsidian page \u2014 expires in 5 minutes')
-            .addText(text => {
-                text
-                    .setPlaceholder('XXXX-XXXX')
-                    .onChange((value) => {
-                        code = value.trim();
-                    });
-            })
-            .addButton(button => {
-                button
-                    .setButtonText('Connect')
-                    .setCta()
-                    .onClick(async () => {
-                        if (!code) {
-                            new Notice('Enter the setup code from your Pensio settings page');
-                            return;
-                        }
-                        try {
-                            button.setDisabled(true);
-                            button.setButtonText('Connecting...');
-
-                            const deviceId = await this.plugin.ensureDeviceId();
-                            const deviceName = `Obsidian \u2014 ${this.app.vault.getName()}`;
-                            const result = await this.plugin.apiClient.pair(
-                                code, deviceId, deviceName, this.plugin.getRefreshToken()
-                            );
-                            await this.plugin.setTokens(result.access, result.refresh);
-
-                            const verified = await this.plugin.verifyAccountBeforeSync();
-                            const account = this.plugin.accountGuard.getAccount();
-                            if (verified && account) {
-                                new Notice(`Connected as ${account.email}`);
-                            } else {
-                                new Notice('Connected \u2014 verifying account on first sync');
-                            }
-                            this.display();
-                        } catch (error) {
-                            new Notice(`Pairing failed: ${errorMessage(error)}`);
-                            console.error('Pairing failed:', error);
-                            button.setDisabled(false);
-                            button.setButtonText('Connect');
-                        }
-                    });
-            });
-    }
-
-    /**
-     * Render the test connection button (shared between disconnected and unverified states).
-     */
-    private renderTestButton(containerEl: HTMLElement): void {
-        new Setting(containerEl)
-            .setName('Test connection')
-            .setDesc('Verify your tokens and account identity')
-            .addButton(button => {
-                button
-                    .setButtonText('Test connection')
-                    .setCta()
-                    .onClick(async () => {
-                        if (!this.plugin.getAccessToken() || !this.plugin.getRefreshToken()) {
-                            new Notice('Please paste both tokens above first');
-                            return;
-                        }
-                        try {
-                            button.setDisabled(true);
-                            button.setButtonText('Testing...');
-
-                            const verified = await this.plugin.verifyAccountBeforeSync();
-                            if (!verified) {
-                                new Notice('Connection failed: could not verify account');
-                                button.setButtonText('Failed');
-                                // A refused token flips the tab to its reconnect state.
-                                window.setTimeout(() => this.display(), 1500);
-                                return;
-                            }
-
-                            const status = await this.plugin.apiClient.getSyncStatus();
-                            const acct = this.plugin.accountGuard.getAccount();
-                            const acctInfo = acct ? ` (${acct.email})` : '';
-                            new Notice(`Connected${acctInfo}! ${status.total_entries} entries on server`);
-                            button.setButtonText('Connected \u2713');
-
-                            // Refresh to show connected state
-                            window.setTimeout(() => this.display(), 1500);
-                        } catch (error) {
-                            new Notice(`Connection failed: ${errorMessage(error)}`);
-                            button.setButtonText('Failed');
-                            console.error('Connection test failed:', error);
-                            window.setTimeout(() => this.display(), 1500);
-                        } finally {
-                            window.setTimeout(() => {
-                                button.setDisabled(false);
-                                button.setButtonText('Test connection');
-                            }, 3000);
-                        }
-                    });
-            });
-    }
 }

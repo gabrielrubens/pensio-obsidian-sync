@@ -1,6 +1,7 @@
 import { Notice, Plugin, setIcon } from 'obsidian';
 import { ApiClient } from './api/client';
 import { AccountGuard } from './auth/accountGuard';
+import { CALLBACK_ACTION, OneClickConnect } from './auth/oneClick';
 import { errorMessage } from './errors';
 import { debugLog, setDebugMode } from './logger';
 import { PensioSettingTab } from './settings';
@@ -31,7 +32,9 @@ export default class PensioPlugin extends Plugin {
     apiClient: ApiClient;
     syncEngine: SyncEngine;
     accountGuard: AccountGuard;
+    oneClick: OneClickConnect;
     statusBarItem: HTMLElement;
+    private settingTab: PensioSettingTab | null = null;
     private _syncState: SyncStateData | null = null;
     /** In-memory token values (persisted in SecretStorage, never in data.json) */
     private _accessToken: string = '';
@@ -79,7 +82,7 @@ export default class PensioPlugin extends Plugin {
         // reconnect state instead of wiping — re-pairing resets it.
         this.apiClient.getTokenManager().setOnAuthInvalidated(() => {
             this.updateStatusBar('reconnect');
-            new Notice('Pensio: session expired. Open Settings → Pensio Journaling Sync and enter a new setup code.');
+            new Notice('Pensio: session expired. Open Settings → Pensio Journaling Sync to reconnect.');
         });
 
         // Initialize account guard
@@ -111,7 +114,17 @@ export default class PensioPlugin extends Plugin {
         this.updateStatusBar('idle');
 
         // Add settings tab
-        this.addSettingTab(new PensioSettingTab(this.app, this));
+        this.settingTab = new PensioSettingTab(this.app, this);
+        this.addSettingTab(this.settingTab);
+
+        // One-click connect: the browser hands the code back at
+        // obsidian://pensio-connect (src/auth/oneClick.ts). The exchange sends
+        // the refresh token this vault holds, so the connection it replaces ends.
+        this.oneClick = new OneClickConnect((code, verifier, deviceId) =>
+            this.apiClient.connectWithCode(code, verifier, deviceId, this._refreshToken));
+        this.registerObsidianProtocolHandler(CALLBACK_ACTION, (params) => {
+            void this.finishOneClickConnect(params);
+        });
 
         // Register commands
         this.registerCommands();
@@ -325,10 +338,10 @@ export default class PensioPlugin extends Plugin {
             }
         });
 
-        // Clear API token
+        // Disconnect. The id stays 'logout' so a hotkey bound to it keeps working.
         this.addCommand({
             id: 'logout',
-            name: 'Logout (clear API token)',
+            name: 'Disconnect from Pensio',
             callback: async () => {
                 await this.logout();
             }
@@ -336,10 +349,24 @@ export default class PensioPlugin extends Plugin {
     }
 
     /**
-     * Logout: clear tokens, sync state, and account cache.
-     * Called by both the command and the settings tab.
+     * Disconnect: stop this vault's connection on Pensio, then clear tokens,
+     * sync state, and account cache here. Called by both the command and the
+     * settings tab.
+     *
+     * The server stop comes first and never blocks the local one: offline, a
+     * dead session or an older server still forget the tokens here, and the
+     * connection is then stoppable from Connected apps on the web.
      */
     async logout(): Promise<void> {
+        let stopped = false;
+        if (this._accessToken && this._refreshToken && !this.apiClient.isAuthInvalidated()) {
+            try {
+                await this.apiClient.disconnect();
+                stopped = true;
+            } catch (error) {
+                debugLog('Disconnect on the server failed; forgetting locally', error);
+            }
+        }
         this._accessToken = '';
         this._refreshToken = '';
         await this.saveTokens();
@@ -351,7 +378,73 @@ export default class PensioPlugin extends Plugin {
         this._syncState = null;
         await this.saveSettings();
         this.updateStatusBar('idle');
-        new Notice('Logged out \u2014 tokens and sync state cleared');
+        new Notice(stopped
+            ? 'Disconnected \u2014 this vault no longer syncs to Pensio'
+            : 'Disconnected here \u2014 stop the connection in Pensio \u2192 Settings \u2192 Connected apps too');
+    }
+
+    // ========================================================================
+    // Connecting
+    // ========================================================================
+
+    /** What Connected apps on the web calls this vault. */
+    deviceName(): string {
+        return `Obsidian \u2014 ${this.app.vault.getName()}`;
+    }
+
+    /** Connect to Pensio: open the approval page in her browser. */
+    async startOneClickConnect(): Promise<void> {
+        const deviceId = await this.ensureDeviceId();
+        const url = await this.oneClick.start(
+            this.settings.apiUrl, deviceId, this.deviceName(), this.app.vault.getName()
+        );
+        window.open(url);
+        new Notice('Pensio: approve this vault in your browser, then come back here.', 10000);
+    }
+
+    /** obsidian://pensio-connect landed. */
+    private async finishOneClickConnect(params: Record<string, string | undefined>): Promise<void> {
+        try {
+            const outcome = await this.oneClick.handleCallback(params);
+            switch (outcome.kind) {
+                case 'connected':
+                    await this.adoptConnection(outcome.result);
+                    return;
+                case 'cancelled':
+                    new Notice('Pensio: connecting was cancelled');
+                    return;
+                case 'expired':
+                    new Notice('Pensio: that request expired \u2014 press Connect in the settings again');
+                    return;
+                case 'not-ours':
+                    new Notice('Pensio: that link was not started from this vault \u2014 press Connect in the settings');
+                    return;
+            }
+        } catch (error) {
+            new Notice(`Pensio: connecting failed \u2014 ${errorMessage(error)}`);
+            console.error('One-click connect failed:', error);
+        }
+    }
+
+    /**
+     * Take a fresh token family from either door (a setup code or one click),
+     * verify the account, and say so.
+     *
+     * ⭐ Sync state is kept: reconnecting after an expired or stopped
+     * connection must not re-upload the vault. A different account is still
+     * caught, by the account guard, which clears the sync state itself.
+     */
+    async adoptConnection(result: { access: string; refresh: string }): Promise<void> {
+        await this.setTokens(result.access, result.refresh, { keepSyncState: true });
+
+        const verified = await this.verifyAccountBeforeSync();
+        const account = this.accountGuard.getAccount();
+        if (verified && account) {
+            new Notice(`Connected as ${account.email}`);
+        } else {
+            new Notice('Connected \u2014 verifying account on first sync');
+        }
+        this.settingTab?.display();
     }
 
     updateStatusBar(status: StatusBarState, detail?: string) {
@@ -428,7 +521,7 @@ export default class PensioPlugin extends Plugin {
      * On account switch: clears sync state, stamps new userId, persists.
      * On first connection: stamps userId, persists.
      */
-    async verifyAccountBeforeSync(): Promise<boolean> {
+    async verifyAccountBeforeSync(options: { reconnectOn401?: boolean } = {}): Promise<boolean> {
         // Skip verification if not authenticated
         if (!this._accessToken || !this._refreshToken) {
             return false;
@@ -460,6 +553,13 @@ export default class PensioPlugin extends Plugin {
                 return true;
 
             case 'error':
+                // Only when the person asked (Test connection): a 401 the
+                // refresh could not cure means this connection is gone, so
+                // show the reconnect state instead of a bare failure.
+                if (result.unauthorized && options.reconnectOn401) {
+                    this.apiClient.markAuthInvalidated();
+                    return false;
+                }
                 // Block sync on error — fail safe, not fail open
                 new Notice(`Pensio: Cannot verify account — sync blocked. ${result.message}`);
                 return false;
@@ -547,7 +647,11 @@ export default class PensioPlugin extends Plugin {
      * Set tokens from external source (e.g. settings tab paste).
      * Persists to SecretStorage and initializes the API client.
      */
-    async setTokens(accessToken: string, refreshToken: string): Promise<void> {
+    async setTokens(
+        accessToken: string,
+        refreshToken: string,
+        options: { keepSyncState?: boolean } = {}
+    ): Promise<void> {
         this._accessToken = accessToken;
         this._refreshToken = refreshToken;
         await this.saveTokens();
@@ -559,7 +663,15 @@ export default class PensioPlugin extends Plugin {
         if (this._previousTokenFingerprint &&
             currentFingerprint &&
             currentFingerprint !== this._previousTokenFingerprint) {
-            await this.handleTokenChange();
+            // A pairing keeps the sync state when it names whose it is: the
+            // account guard compares that id on the next verify and clears it
+            // on a switch. A hand-pasted token, or a state with no owner, is
+            // cleared as before.
+            if (options.keepSyncState && this._syncState?.userId) {
+                this.accountGuard.clearAccount();
+            } else {
+                await this.handleTokenChange();
+            }
         }
         this._previousTokenFingerprint = currentFingerprint;
         // Restart sync if appropriate

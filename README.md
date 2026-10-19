@@ -54,8 +54,8 @@ Want the newest build before it reaches the directory? Install [BRAT](https://gi
 ## Setup
 
 1. **Create a Pensio account** at [pensio.app/register](https://pensio.app/register/)
-2. **Get a setup code** — open [Connect Obsidian](https://pensio.app/tokens/pair-obsidian/) and generate a one-time code
-3. **Pair** — open Obsidian Settings → Pensio Journaling Sync, enter the code, click **Connect**
+2. **Connect** — open Obsidian Settings → Pensio Journaling Sync, press **Connect to Pensio** and approve the vault in your browser
+3. **No browser round trip?** Open [Connect Obsidian](https://pensio.app/tokens/pair-obsidian/), generate a one-time setup code, enter it under **Setup code** and press **Use code**
 4. **Configure folders** — add your vault folders to sync (default: `Journal`)
 
 Auto-sync is on by default. Entries sync as you write.
@@ -74,7 +74,7 @@ Access via Command Palette (Ctrl/Cmd + P):
 | **Force sync all files** | Re-check all files (still skips unchanged content) |
 | **Sync current file** | Sync only the active file |
 | **Check sync status** | Show server entries and local tracked files |
-| **Logout** | Clear tokens and sync state |
+| **Disconnect from Pensio** | Stop this vault's connection on Pensio, then clear tokens and sync state here |
 
 ### Status bar
 

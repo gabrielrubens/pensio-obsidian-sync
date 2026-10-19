@@ -36,7 +36,7 @@ export type VerifyResult =
     | { status: 'ok'; account: AccountInfo }
     | { status: 'account-switched'; previousId: string; account: AccountInfo }
     | { status: 'first-connection'; account: AccountInfo }
-    | { status: 'error'; message: string };
+    | { status: 'error'; message: string; unauthorized?: boolean };
 
 export class AccountGuard {
     private cachedAccount: AccountInfo | null = null;
@@ -60,7 +60,7 @@ export class AccountGuard {
             const e = toRequestError(error);
             // Auth errors (401) — let normal auth flow handle it
             if (e.status === 401) {
-                return { status: 'error', message: 'Authentication expired' };
+                return { status: 'error', message: 'Authentication expired', unauthorized: true };
             }
             console.error('Account guard: failed to verify identity', error);
             return { status: 'error', message: e.message ?? 'Network error' };
