@@ -48,3 +48,40 @@ describe('ApiClient.pair', () => {
         expect(lastBody()).not.toHaveProperty('previous_refresh');
     });
 });
+
+describe('ApiClient.connectWithCode', () => {
+    beforeEach(() => {
+        mocked.mockReset();
+        mocked.mockResolvedValue({
+            status: 200,
+            json: { access: 'a', refresh: 'r', device_id: 'd', device_name: 'n' },
+        });
+    });
+
+    it('posts the code and the verifier, and the token it replaces', async () => {
+        const client = new ApiClient({ ...DEFAULT_SETTINGS, apiUrl: 'https://pensio.app' });
+        await client.connectWithCode('the-code', 'the-verifier', 'vault-1', 'old-refresh');
+
+        const call = mocked.mock.calls[mocked.mock.calls.length - 1][0];
+        expect(call.url).toBe('https://pensio.app/api/v1/auth/connect/');
+        expect(call.headers).not.toHaveProperty('Authorization');
+        expect(lastBody()).toEqual({
+            code: 'the-code',
+            verifier: 'the-verifier',
+            device_id: 'vault-1',
+            previous_refresh: 'old-refresh',
+        });
+    });
+
+    it('says what the server said when it refuses', async () => {
+        mocked.mockResolvedValue({
+            status: 400,
+            json: { error: { fields: { code: ['This connection request has expired.'] } } },
+        });
+        const client = new ApiClient({ ...DEFAULT_SETTINGS, apiUrl: 'https://pensio.app' });
+
+        await expect(client.connectWithCode('c', 'v', 'vault-1')).rejects.toThrow(
+            'This connection request has expired.'
+        );
+    });
+});

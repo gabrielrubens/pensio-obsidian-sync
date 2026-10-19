@@ -6,6 +6,12 @@ name: Release Obsidian plugin
 #     release, from the head of main. That path exists for a session whose
 #     network refuses tag pushes; it refuses a version the manifest does not
 #     declare, so it can never tag the wrong commit.
+#
+# ⭐ A version with a hyphen (0.6.0-beta.1) is a PRE-RELEASE, for BRAT. Run it
+# by hand on a branch whose manifest.json declares that version, never on main:
+# the community directory offers whatever version main's manifest.json names,
+# so a beta that reached main would update every installed plugin. A
+# pre-release is never "Latest", and BRAT can install it by its tag.
 
 on:
   push:
@@ -56,9 +62,12 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            prerelease=""
+            case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
             gh release create "$VERSION" \
               --title="$VERSION" \
               --target="$GITHUB_SHA" \
+              $prerelease \
               main.js manifest.json styles.css
           else
             tag="${GITHUB_REF#refs/tags/}"
