@@ -1,121 +1,127 @@
-/* Pensio Sync Plugin Styles */
+/* Pensio Journaling Sync — styles. Obsidian's own variables only, so every
+   theme, light or dark, colours it. */
 
-/* ── Branding header ── */
-.pensio-branding {
+/* ── Status card: the first thing in the settings (0.7.0) ──
+   One row, drawn as a card: the plugin's name and version across the top,
+   then an icon, whether this vault is syncing, and the one button that state
+   needs. The tone classes are set by src/connectionSection.ts. */
+.setting-item.pensio-status-card {
+    flex-wrap: wrap;
+    gap: var(--size-4-3);
     margin-bottom: var(--size-4-4);
-    padding: var(--size-4-4);
-    border-radius: var(--radius-m);
-    background: var(--background-secondary);
+    padding: var(--size-4-3) var(--size-4-4) var(--size-4-4);
     border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-l);
+    background: var(--background-secondary);
 }
 
-.pensio-branding-title {
+.pensio-card-top {
     display: flex;
+    flex-basis: 100%;
     align-items: center;
-    gap: var(--size-4-1);
-    margin-bottom: var(--size-2-2);
+    gap: var(--size-2-3);
+    color: var(--text-muted);
+    font-size: var(--font-ui-small);
 }
 
-.pensio-branding-icon {
-    font-size: var(--font-ui-medium);
+.pensio-card-spark {
     color: var(--text-accent);
 }
 
-.pensio-branding-name {
-    font-size: var(--font-ui-large);
+.pensio-card-brand {
+    color: var(--text-normal);
     font-weight: var(--font-semibold);
-    color: var(--text-normal);
-    letter-spacing: 0.02em;
 }
 
-.pensio-branding-tagline {
-    margin: 0 0 var(--size-2-3) 0;
-    color: var(--text-muted);
-    font-size: var(--font-ui-small);
-    line-height: 1.5;
-}
-
-.pensio-branding-link {
-    color: var(--text-accent);
-    font-size: var(--font-ui-small);
-    text-decoration: none;
-}
-
-.pensio-branding-link:hover {
-    text-decoration: underline;
-}
-
-/* ── Account card (connected / unverified states) ── */
-.pensio-account-card {
-    margin-bottom: var(--size-4-3);
-    padding: var(--size-4-3);
-    border-radius: var(--radius-s);
-    background: var(--background-secondary);
-    border: 1px solid var(--background-modifier-border);
-}
-
-.pensio-account-status {
-    display: flex;
-    align-items: center;
-    gap: var(--size-4-2);
-}
-
-.pensio-status-dot {
-    font-size: var(--font-ui-medium);
-    line-height: 1;
-}
-
-.pensio-status-connected {
-    color: var(--text-success);
-}
-
-.pensio-status-pending {
-    color: var(--text-warning);
-}
-
-.pensio-account-email {
-    font-weight: var(--font-medium);
-    color: var(--text-normal);
-}
-
-.pensio-token-status {
-    margin: var(--size-2-2) 0 0 0;
-    color: var(--text-muted);
+.pensio-card-version {
+    font-family: var(--font-monospace);
     font-size: var(--font-ui-smaller);
 }
 
-/* ── Getting started (disconnected onboarding) ── */
-.pensio-getting-started {
-    margin-bottom: var(--size-4-4);
-    padding: var(--size-4-3);
-    border-radius: var(--radius-s);
-    background-color: var(--background-secondary);
+.pensio-card-spacer {
+    flex: 1;
+}
+
+.pensio-card-icon {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: var(--size-4-9);
+    height: var(--size-4-9);
+    border-radius: 50%;
+    background: var(--background-primary);
+    color: var(--text-muted);
+}
+
+.pensio-card-icon svg {
+    width: var(--icon-m);
+    height: var(--icon-m);
+}
+
+.pensio-status-card .setting-item-name {
+    font-size: var(--font-ui-large);
+    font-weight: var(--font-semibold);
+}
+
+/* Connected and syncing */
+.pensio-tone-ok .pensio-card-icon {
+    background: rgba(var(--color-green-rgb), 0.15);
+    color: var(--color-green);
+}
+
+/* Needs her: the session expired, or the last sync failed */
+.setting-item.pensio-tone-warn {
+    border-color: rgba(var(--color-orange-rgb), 0.45);
+    background: rgba(var(--color-orange-rgb), 0.08);
+}
+
+.pensio-tone-warn .pensio-card-icon {
+    background: rgba(var(--color-orange-rgb), 0.18);
+    color: var(--color-orange);
+}
+
+/* Not connected: the accent outline points at Connect to Pensio */
+.setting-item.pensio-tone-off {
+    border-color: hsla(var(--interactive-accent-hsl), 0.55);
+}
+
+/* Checking saved tokens */
+.pensio-spin svg {
+    animation: pensio-spin 1.4s linear infinite;
+}
+
+@keyframes pensio-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .pensio-spin svg {
+        animation: none;
+    }
+}
+
+/* On a phone the card's button gets its own line, full width */
+.is-mobile .pensio-status-card .setting-item-control {
+    flex-basis: 100%;
+}
+
+.is-mobile .pensio-status-card .setting-item-control button {
+    flex: 1;
+}
+
+/* ── Beta badge ── */
+.pensio-beta-badge {
+    padding: 0 var(--size-2-2);
+    font-size: var(--font-ui-smaller);
+    font-weight: var(--font-semibold);
+    color: var(--text-muted);
     border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
 }
 
-.pensio-getting-started p {
-    margin: var(--size-2-2) 0;
-    color: var(--text-muted);
-}
-
-.pensio-getting-started ol {
-    padding-left: var(--size-4-6);
-    margin: var(--size-2-3) 0;
-}
-
-.pensio-getting-started li {
-    margin-bottom: var(--size-2-2);
-    color: var(--text-muted);
-}
-
-.pensio-getting-started a {
-    color: var(--text-accent);
-}
-
-/* ── Folder description ── */
-.pensio-folder-desc {
-    margin-bottom: 8px;
-}
 /* ── Status bar ── */
 .pensio-status-icon {
     display: inline-flex;
@@ -127,16 +133,4 @@
 .pensio-status-icon svg {
     width: var(--icon-s);
     height: var(--icon-s);
-}
-
-/* ── Beta badge ── */
-.pensio-beta-badge {
-    margin-left: var(--size-2-2);
-    padding: 0 var(--size-2-2);
-    font-size: var(--font-ui-smaller);
-    font-weight: var(--font-semibold);
-    color: var(--text-muted);
-    border: 1px solid var(--background-modifier-border);
-    border-radius: var(--radius-s);
-    vertical-align: middle;
 }

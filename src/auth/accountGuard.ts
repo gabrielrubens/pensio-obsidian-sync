@@ -12,10 +12,10 @@
  * pastes the wrong tokens.
  */
 
-import { Notice } from 'obsidian';
 import { ApiClient } from '../api/client';
 import { toRequestError } from '../errors';
 import { debugLog } from '../logger';
+import { notify } from '../notices';
 import { CurrentUserResponse, SyncStateData } from '../types';
 
 export interface AccountInfo {
@@ -36,7 +36,7 @@ export type VerifyResult =
     | { status: 'ok'; account: AccountInfo }
     | { status: 'account-switched'; previousId: string; account: AccountInfo }
     | { status: 'first-connection'; account: AccountInfo }
-    | { status: 'error'; message: string; unauthorized?: boolean };
+    | { status: 'error'; message: string; unauthorized?: boolean; error?: unknown };
 
 export class AccountGuard {
     private cachedAccount: AccountInfo | null = null;
@@ -60,10 +60,10 @@ export class AccountGuard {
             const e = toRequestError(error);
             // Auth errors (401) — let normal auth flow handle it
             if (e.status === 401) {
-                return { status: 'error', message: 'Authentication expired', unauthorized: true };
+                return { status: 'error', message: 'Authentication expired', unauthorized: true, error };
             }
             console.error('Account guard: failed to verify identity', error);
-            return { status: 'error', message: e.message ?? 'Network error' };
+            return { status: 'error', message: e.message ?? 'Network error', error };
         }
 
         const account: AccountInfo = {
@@ -94,10 +94,10 @@ export class AccountGuard {
             `but current user is ${account.id} (${account.email})`
         );
 
-        new Notice(
-            `⚠️ Pensio: Account changed to ${account.email}. ` +
-            `Sync state cleared — all files will re-sync.`,
-            10000,
+        notify(
+            `This vault is now connected to ${account.email}, a different account, ` +
+            'so every note syncs again.',
+            15000,
         );
 
         return {

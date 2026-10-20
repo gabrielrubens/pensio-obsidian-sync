@@ -7,6 +7,15 @@ workflow publishes the section whose heading names the version, and refuses to
 publish a release without one. Releases before 0.5.0 are on
 [GitHub](https://github.com/gabrielrubens/pensio-obsidian-sync/releases).
 
+## 0.7.0
+
+- **See at a glance whether this vault is syncing.** The top of the plugin's settings is one card now. Green: connected, with your account, how many notes have synced and when. Orange: the session expired or the last sync failed, and why. Outlined: nothing is connected yet. The plugin's version is on it too.
+- **Getting back in is one button.** Whenever there is no working connection, the card carries **Connect to Pensio**, with the setup code right under it. A connected vault can renew its connection with **Connect again**, under Account. **Sync now** is on the card once you are connected.
+- **A failed sync says what went wrong, and stays until you close it.** Every notice now starts with "Pensio:", so you know which plugin it is from, and says what to do: check your internet connection, press Connect to Pensio, or wait while the plugin tries again. A background sync that fails tells you once, and the status bar says so until a sync works again. Click the status bar to read why.
+- **Tokens nobody has checked are checked for you** when you open the settings. You no longer have to find Test connection.
+- **Disconnect asks first.**
+- **Less to read, in a clearer order:** the card, your journal folders, Sync, your account, then Advanced, which is its own page now. Obsidian's settings search still finds every setting. Documentation and Report an issue are the two icons on the card.
+
 ## 0.6.1
 
 - **Renaming or moving a note keeps its entry.** It used to make a second entry in Pensio, which then read the note all over again. Now the entry moves with the note and keeps its reading and its links. A note moved out of your sync folders keeps its entry too: moving a note is not deleting it.

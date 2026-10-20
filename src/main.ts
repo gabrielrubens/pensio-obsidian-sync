@@ -1,12 +1,13 @@
-import { Notice, Plugin, setIcon } from 'obsidian';
+import { Plugin, TFile } from 'obsidian';
 import { ApiClient } from './api/client';
 import { AccountGuard } from './auth/accountGuard';
 import { CALLBACK_ACTION, OneClickConnect } from './auth/oneClick';
-import { errorMessage } from './errors';
 import { debugLog, setDebugMode } from './logger';
+import { FailureContext, NOTICE_MS, notify, notifyFailure } from './notices';
 import { PensioSettingTab } from './settings';
 import { SyncEngine } from './sync/engine';
 import { quotaDayKey, quotaNoticeMessage, quotaSummaryLine, shouldNotifyQuota } from './sync/quotaNotice';
+import { SyncStatus } from './syncStatus';
 import { DEFAULT_SETTINGS, JournalFolderMapping, PensioSettings, ProcessingStatus, SyncStateData } from './types';
 
 /** Pre-0.3.0 folder mappings carried extra per-folder fields. */
@@ -25,8 +26,6 @@ interface PersistedData extends Partial<PensioSettings> {
     refreshToken?: string;
 }
 
-type StatusBarState = 'idle' | 'syncing' | 'error' | 'success' | 'reconnect';
-
 export default class PensioPlugin extends Plugin {
     settings: PensioSettings;
     apiClient: ApiClient;
@@ -34,6 +33,8 @@ export default class PensioPlugin extends Plugin {
     accountGuard: AccountGuard;
     oneClick: OneClickConnect;
     statusBarItem: HTMLElement;
+    /** Whether this vault is syncing: the status bar, the notices, the status card. */
+    syncStatus: SyncStatus;
     private settingTab: PensioSettingTab | null = null;
     private _syncState: SyncStateData | null = null;
     /** In-memory token values (persisted in SecretStorage, never in data.json) */
@@ -58,6 +59,10 @@ export default class PensioPlugin extends Plugin {
         // Load tokens from SecretStorage (encrypted at rest)
         await this.loadTokens();
 
+        // What the sync is doing, for the status bar, the notices and the
+        // status card. Built first: the callbacks below report to it.
+        this.syncStatus = this.createSyncStatus();
+
         // Initialize API client
         this.apiClient = new ApiClient(this.settings);
 
@@ -81,8 +86,7 @@ export default class PensioPlugin extends Plugin {
         // Dead session (server-confirmed): keep tokens, surface a persistent
         // reconnect state instead of wiping — re-pairing resets it.
         this.apiClient.getTokenManager().setOnAuthInvalidated(() => {
-            this.updateStatusBar('reconnect');
-            new Notice('Pensio: session expired. Open Settings → Pensio Journaling Sync to reconnect.');
+            this.syncStatus.connectionStopped();
         });
 
         // Initialize account guard
@@ -106,12 +110,20 @@ export default class PensioPlugin extends Plugin {
         // with no indication that analysis will take weeks.
         this.syncEngine.onProcessingStatus = (status) => this.handleProcessingStatus(status);
 
+        // An automatic sync reports how it ended; one she asked for is
+        // reported by syncNow.
+        this.syncEngine.onSyncFailed = (error) => this.syncStatus.failed(error, { asked: false });
+        this.syncEngine.onSyncSucceeded = () => this.syncStatus.recovered();
+
         // Snapshot current tokens for change detection
         this._previousTokenFingerprint = this.tokenFingerprint();
 
-        // Add status bar item
+        // Status bar: what the sync is doing. Pressing it says why, in a
+        // notice that stays until dismissed.
         this.statusBarItem = this.addStatusBarItem();
-        this.updateStatusBar('idle');
+        this.statusBarItem.addClass('mod-clickable');
+        this.registerDomEvent(this.statusBarItem, 'click', () => this.syncStatus.explain());
+        this.syncStatus.idle();
 
         // Add settings tab
         this.settingTab = new PensioSettingTab(this.app, this);
@@ -236,44 +248,14 @@ export default class PensioPlugin extends Plugin {
         this.addCommand({
             id: 'sync-now',
             name: 'Sync now',
-            callback: async () => {
-                this.updateStatusBar('syncing');
-                try {
-                    if (!await this.verifyAccountBeforeSync()) {
-                        this.updateStatusBar('idle');
-                        return;
-                    }
-                    const result = await this.syncEngine.syncAll(false);
-                    this.updateStatusBar('success', `${result.synced} synced`);
-                    new Notice(`Sync done: ${result.synced} synced, ${result.skipped} unchanged, ${result.total} total files`);
-                } catch (error) {
-                    this.updateStatusBar('error');
-                    new Notice(`Sync failed: ${errorMessage(error)}`);
-                    console.error('Sync error:', error);
-                }
-            }
+            callback: () => this.syncNow()
         });
 
         // Force sync all files (ignore change detection)
         this.addCommand({
             id: 'force-sync-all',
             name: 'Force sync all files',
-            callback: async () => {
-                this.updateStatusBar('syncing');
-                try {
-                    if (!await this.verifyAccountBeforeSync()) {
-                        this.updateStatusBar('idle');
-                        return;
-                    }
-                    const result = await this.syncEngine.syncAll(true);
-                    this.updateStatusBar('success', `${result.synced} synced`);
-                    new Notice(`Force sync done: ${result.synced} synced, ${result.skipped} unchanged, ${result.total} total files`);
-                } catch (error) {
-                    this.updateStatusBar('error');
-                    new Notice(`Sync failed: ${errorMessage(error)}`);
-                    console.error('Sync error:', error);
-                }
-            }
+            callback: () => this.syncNow({ force: true })
         });
 
         // Sync current file
@@ -283,30 +265,14 @@ export default class PensioPlugin extends Plugin {
             callback: async () => {
                 const file = this.app.workspace.getActiveFile();
                 if (!file) {
-                    new Notice('No active file');
+                    notify('Open a note first, then sync it.');
                     return;
                 }
-
                 if (!file.path.endsWith('.md')) {
-                    new Notice('Current file is not a Markdown file');
+                    notify('Only Markdown notes sync to Pensio.');
                     return;
                 }
-
-                this.updateStatusBar('syncing');
-                try {
-                    if (!await this.verifyAccountBeforeSync()) {
-                        this.updateStatusBar('idle');
-                        return;
-                    }
-                    this.syncEngine.markDirty(file.path);
-                    const result = await this.syncEngine.syncAll(false);
-                    this.updateStatusBar('success', `${file.name} synced`);
-                    new Notice(`File sync done: ${result.synced} synced`);
-                } catch (error) {
-                    this.updateStatusBar('error');
-                    new Notice(`Sync failed: ${errorMessage(error)}`);
-                    console.error('Sync error:', error);
-                }
+                await this.syncNow({ file });
             }
         });
 
@@ -325,14 +291,15 @@ export default class PensioPlugin extends Plugin {
                     const quotaLine = quotaSummaryLine(
                         status.processing_status ?? this.syncEngine.getLastProcessingStatus()
                     );
-                    new Notice(
+                    notify(
+                        'sync status\n' +
                         `${accountLine}` +
                         `Server entries: ${status.total_entries}\n` +
                         `Local tracked files: ${trackedFiles}` +
                         (quotaLine ? `\n${quotaLine}` : '')
                     );
                 } catch (error) {
-                    new Notice(`Failed to get status: ${errorMessage(error)}`);
+                    notifyFailure('Checking the sync status', error, this.failureContext());
                     console.error('Status error:', error);
                 }
             }
@@ -345,6 +312,49 @@ export default class PensioPlugin extends Plugin {
             callback: async () => {
                 await this.logout();
             }
+        });
+    }
+
+    /**
+     * A sync she asked for: a command, or *Sync now* on the status card. It
+     * always says how it ended, and a failure stays on screen until she
+     * dismisses it (SyncStatus).
+     */
+    async syncNow(options: { force?: boolean; file?: TFile } = {}): Promise<void> {
+        this.syncStatus.syncing();
+        try {
+            const verified = await this.verifyAccountBeforeSync({
+                onError: (error) => this.syncStatus.failed(error, { asked: true }),
+            });
+            if (!verified) {
+                this.syncStatus.idle();
+                return;
+            }
+            if (options.file) this.syncEngine.markDirty(options.file.path);
+            const result = await this.syncEngine.syncAll(options.force ?? false);
+            this.syncStatus.succeeded(`${result.synced} synced`);
+            if (options.file) {
+                notify(result.synced > 0 ? `${options.file.name} synced.` : `${options.file.name} was already up to date.`);
+            } else {
+                notify(`${options.force ? 'Full sync' : 'Sync'} done. ${result.synced} synced, ${result.skipped} unchanged.`);
+            }
+        } catch (error) {
+            this.syncStatus.failed(error, { asked: true });
+            console.error('Sync error:', error);
+        }
+    }
+
+    /** What a failure notice needs to word itself. */
+    failureContext(): FailureContext {
+        return { apiUrl: this.settings.apiUrl, autoSync: this.settings.autoSync };
+    }
+
+    private createSyncStatus(): SyncStatus {
+        return new SyncStatus({
+            statusBar: () => this.statusBarItem ?? null,
+            isAuthInvalidated: () => this.apiClient?.isAuthInvalidated() ?? false,
+            trackedCount: () => this.syncEngine?.getTrackedFileCount() ?? 0,
+            failureContext: () => this.failureContext(),
         });
     }
 
@@ -377,10 +387,16 @@ export default class PensioPlugin extends Plugin {
         this.accountGuard.clearAccount();
         this._syncState = null;
         await this.saveSettings();
-        this.updateStatusBar('idle');
-        new Notice(stopped
-            ? 'Disconnected \u2014 this vault no longer syncs to Pensio'
-            : 'Disconnected here \u2014 stop the connection in Pensio \u2192 Settings \u2192 Connected apps too');
+        this.syncStatus?.reset();
+        if (stopped) {
+            notify('Disconnected. This vault no longer syncs.');
+        } else {
+            notify(
+                'Disconnected here, but Pensio could not be reached to stop the connection there. ' +
+                'Stop it on the web too: Settings \u2192 Connected apps.',
+                NOTICE_MS.failure,
+            );
+        }
     }
 
     // ========================================================================
@@ -399,7 +415,7 @@ export default class PensioPlugin extends Plugin {
             this.settings.apiUrl, deviceId, this.deviceName(), this.app.vault.getName()
         );
         window.open(url);
-        new Notice('Pensio: approve this vault in your browser, then come back here.', 10000);
+        notify('Approve this vault in your browser, then come back here.', 10000);
     }
 
     /** obsidian://pensio-connect landed. */
@@ -411,17 +427,17 @@ export default class PensioPlugin extends Plugin {
                     await this.adoptConnection(outcome.result);
                     return;
                 case 'cancelled':
-                    new Notice('Pensio: connecting was cancelled');
+                    notify('Connecting was cancelled.');
                     return;
                 case 'expired':
-                    new Notice('Pensio: that request expired \u2014 press Connect in the settings again');
+                    notify('That request expired. Press Connect to Pensio in the settings again.', NOTICE_MS.failure);
                     return;
                 case 'not-ours':
-                    new Notice('Pensio: that link was not started from this vault \u2014 press Connect in the settings');
+                    notify('That link was not started from this vault. Press Connect to Pensio in its settings.', NOTICE_MS.failure);
                     return;
             }
         } catch (error) {
-            new Notice(`Pensio: connecting failed \u2014 ${errorMessage(error)}`);
+            notifyFailure('Connecting', error, this.failureContext());
             console.error('One-click connect failed:', error);
         }
     }
@@ -437,45 +453,14 @@ export default class PensioPlugin extends Plugin {
     async adoptConnection(result: { access: string; refresh: string }): Promise<void> {
         await this.setTokens(result.access, result.refresh, { keepSyncState: true });
 
-        const verified = await this.verifyAccountBeforeSync();
+        // A check that cannot run now (offline) is not a failed connection:
+        // the first sync checks again.
+        const verified = await this.verifyAccountBeforeSync({ onError: () => undefined });
         const account = this.accountGuard.getAccount();
-        if (verified && account) {
-            new Notice(`Connected as ${account.email}`);
-        } else {
-            new Notice('Connected \u2014 verifying account on first sync');
-        }
+        notify(verified && account
+            ? `Connected as ${account.email}.`
+            : 'Connected. The account is checked on the first sync.');
         this.settingTab?.update();
-    }
-
-    updateStatusBar(status: StatusBarState, detail?: string) {
-        switch (status) {
-            case 'idle': {
-                // A dead session takes priority over the idle display — the
-                // reconnect hint must stay visible, not be reset by the
-                // success/error timeouts below.
-                if (this.apiClient?.isAuthInvalidated()) {
-                    this.setStatusBar('cloud-off', 'Reconnect Pensio');
-                    break;
-                }
-                const tracked = this.syncEngine.getTrackedFileCount();
-                this.setStatusBar('cloud', tracked > 0 ? `${tracked} synced` : 'Pensio');
-                break;
-            }
-            case 'syncing':
-                this.setStatusBar('refresh-cw', 'Syncing...');
-                break;
-            case 'success':
-                this.setStatusBar('check', detail ?? 'Synced');
-                window.setTimeout(() => this.updateStatusBar('idle'), 3000);
-                break;
-            case 'error':
-                this.setStatusBar('alert-triangle', 'Sync error');
-                window.setTimeout(() => this.updateStatusBar('idle'), 5000);
-                break;
-            case 'reconnect':
-                this.setStatusBar('cloud-off', 'Reconnect Pensio');
-                break;
-        }
     }
 
     /**
@@ -494,20 +479,13 @@ export default class PensioPlugin extends Plugin {
 
         this.syncEngine.markQuotaNoticeShown(day);
 
-        const notice = new Notice(quotaNoticeMessage(status), 20000);
-        // noticeEl is absent under the test mock — optional chaining keeps the
+        const notice = notify(quotaNoticeMessage(status), 20000);
+        // messageEl is absent under the test mock — optional chaining keeps the
         // message itself working even if the click target is unavailable.
         const apiUrl = this.settings.apiUrl;
-        (notice as { noticeEl?: HTMLElement })?.noticeEl?.addEventListener('click', () => {
+        (notice as { messageEl?: HTMLElement })?.messageEl?.addEventListener('click', () => {
             window.open(`${apiUrl}/pricing/`);
         });
-    }
-
-    private setStatusBar(icon: string, text: string): void {
-        this.statusBarItem.empty();
-        const iconEl = this.statusBarItem.createSpan({ cls: 'pensio-status-icon' });
-        setIcon(iconEl, icon);
-        this.statusBarItem.createSpan({ text, cls: 'pensio-status-text' });
     }
 
     // ========================================================================
@@ -521,7 +499,11 @@ export default class PensioPlugin extends Plugin {
      * On account switch: clears sync state, stamps new userId, persists.
      * On first connection: stamps userId, persists.
      */
-    async verifyAccountBeforeSync(options: { reconnectOn401?: boolean } = {}): Promise<boolean> {
+    async verifyAccountBeforeSync(options: {
+        reconnectOn401?: boolean;
+        /** Report a failure here instead of in a notice. */
+        onError?: (error: unknown) => void;
+    } = {}): Promise<boolean> {
         // Skip verification if not authenticated
         if (!this._accessToken || !this._refreshToken) {
             return false;
@@ -561,7 +543,11 @@ export default class PensioPlugin extends Plugin {
                     return false;
                 }
                 // Block sync on error — fail safe, not fail open
-                new Notice(`Pensio: Cannot verify account — sync blocked. ${result.message}`);
+                {
+                    const error = result.error ?? new Error(result.message);
+                    if (options.onError) options.onError(error);
+                    else notifyFailure('Sync', error, this.failureContext());
+                }
                 return false;
         }
     }
@@ -681,7 +667,7 @@ export default class PensioPlugin extends Plugin {
             this.syncEngine.startAutoSync();
         }
         // Re-pairing resets a dead session — clear the reconnect hint.
-        this.updateStatusBar('idle');
+        this.syncStatus?.reset();
     }
 
     /**

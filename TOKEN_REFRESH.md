@@ -3,20 +3,40 @@
 How Pensio Journaling Sync authenticates, refreshes, and stores credentials — and the
 design rules that keep a pairing alive across weeks of Obsidian being closed.
 
-## Pairing
+## Connecting
 
-The plugin authenticates with a **one-time setup code** (TV-style pairing):
+There are two ways in, and both end in the same place: a fresh **per-device
+token family** — a short-lived access token (30 min) and a long-lived refresh
+token — minted for a locally generated `device_id` and a device name.
 
-1. The Pensio web app (Settings → API tokens → **Connect Obsidian**) mints an
-   8-character code. It expires in 5 minutes and can be used once.
-2. The plugin exchanges the code at `POST /api/v1/auth/pair/` together with a
-   locally generated `device_id` and a device name.
-3. The server answers with a fresh **per-device token family**: a short-lived
-   access token (30 min) and a long-lived refresh token.
+**Connect to Pensio** (plugin 0.6.0) is the button the settings tab leads with:
 
-Every pairing gets its own token family, so pairing a second device can never
-invalidate the first one. Manual access/refresh token entry remains available
-under **Advanced** for self-hosted servers.
+1. The plugin makes a PKCE verifier and a random `state`, keeps both in memory,
+   and opens `/connect/obsidian/` in the browser with the verifier's challenge.
+2. On Pensio she approves the vault. Pensio sends a single-use code back to
+   `obsidian://pensio-connect`, never a token.
+3. The plugin checks `state` and exchanges the code and the verifier at
+   `POST /api/v1/auth/connect/`.
+
+⚠️ While one-click connect is still rolling out on Pensio, the same button can
+land on the setup-code page instead of the approval. Then the second way below
+finishes the job, and nothing about the plugin changes.
+
+**The setup code** (TV-style pairing) sits beneath it, under **Setup code**:
+
+1. The Pensio web app (Settings → Connected apps → **Connect Obsidian**) mints
+   an 8-character code. It expires in 5 minutes and can be used once.
+2. She enters it under **Setup code** and presses **Use code**; the plugin
+   exchanges it at `POST /api/v1/auth/pair/`.
+
+It is also the way in for an install whose browser cannot open `obsidian://`
+links, where the one-click round trip never comes back.
+
+Every connection gets its own token family, so connecting a second device can
+never invalidate the first one. Connecting again from the same vault sends the
+refresh token it already holds, so the connection it replaces ends instead of
+staying listed in Connected apps. Manual access/refresh token entry remains
+available under **Advanced** for self-hosted servers.
 
 ## Refresh: lazy + sliding reissue
 
@@ -39,10 +59,10 @@ under **Advanced** for self-hosted servers.
 - **Confirmed-dead sessions** (HTTP 401, or a 400 whose body carries the
   server's `reauth_required` / `token_not_valid` markers) switch the plugin
   into a persistent **Reconnect** state: the status bar shows "Reconnect
-  Pensio" and the settings tab asks for a new setup code. Local notes and
-  sync history are untouched.
-- **Tokens are wiped only on explicit logout.** A refresh failure — of any
-  kind — never deletes credentials.
+  Pensio" and the settings tab offers **Connect to Pensio** and the setup
+  code again. Local notes and sync history are untouched.
+- **Tokens are wiped only on an explicit Disconnect.** A refresh failure — of
+  any kind — never deletes credentials.
 - After a failed refresh the plugin **never falls back to a stale access
   token**; the request fails with a typed error instead of producing
   confusing downstream 401s.
@@ -60,6 +80,13 @@ under **Advanced** for self-hosted servers.
 
 ## Revocation
 
-Each pairing appears as a device on the Pensio token page and can be revoked
-there at any time; the server rejects refreshes from revoked devices. The
-plugin's **Logout** command clears local tokens and sync state.
+Each connection is listed in Pensio → Settings → **Connected apps**, where
+**Stop it** ends it at any time; the server refuses every request from a
+stopped device. Each connection also ends a year after it was made.
+
+The plugin's **Disconnect** (the button in its settings, and the **Disconnect
+from Pensio** command) stops this vault's connection on Pensio first, at
+`POST /api/v1/auth/disconnect/`, then clears the tokens and sync state here.
+Offline, or on a session that is already dead, it still clears locally and says
+to stop the connection in Connected apps too. Another computer syncing the same
+vault keeps its own connection.

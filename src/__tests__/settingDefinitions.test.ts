@@ -12,18 +12,35 @@
  *   write, so a typo in a key would silently save nothing;
  * - the journal folder list adds and removes, and saves both.
  *
+ * Since 0.7.0 (design "B · Status card") the order is the card, the setup
+ * code while there is no working connection, the journal folders, Sync, the
+ * account once connected, and Advanced as a sub-page. Documentation and
+ * Report an issue are icon buttons on the card, so they left search: they
+ * are links, not settings.
+ *
  * Sabotage-checked (2026-10-19), each alone then restored:
  * - setControlValue writing `saveData(this.plugin.settings)` instead of
  *   saveSettings() → "keeps the sync state" and "stops the file watcher" RED;
  * - a control key misspelled ('autosync') → "reads back what it wrote" RED;
  * - Mirror delete's row hidden (`visible: false`) → "every setting" RED;
  * - onDelete not saving → the list test RED.
+ *
+ * Re-checked on 0.7.0 (2026-10-20), each alone then restored:
+ * - Advanced as a plain group instead of `type: 'page'` → "Advanced is a
+ *   page" RED;
+ * - the Sync group moved above the journal folders → "in this order" RED.
  */
 import { Setting } from 'obsidian';
 import PensioPlugin from '../main';
 import { PensioSettingTab } from '../settings';
 
-type FakeSetting = { name: string; group: string | undefined; searchable: boolean };
+type FakeSetting = {
+    searchName: string;
+    group: string | undefined;
+    page: string | undefined;
+    opensPage: boolean;
+    searchable: boolean;
+};
 const rendered = (): FakeSetting[] => (Setting as unknown as { rendered: FakeSetting[] }).rendered;
 
 interface PluginState {
@@ -48,7 +65,12 @@ function makePlugin(state: PluginState = { tokens: false, account: null }) {
     internals._accessToken = state.tokens ? 'access' : '';
     internals._refreshToken = state.tokens ? 'refresh' : '';
     internals.saveData = jest.fn(async () => undefined);
-    internals.accountGuard = { getAccount: () => state.account };
+    internals.manifest = { version: '0.7.0' };
+    internals.accountGuard = {
+        getAccount: () => state.account,
+        // The card checks saved tokens it has not seen work; offline here.
+        verify: async () => ({ status: 'error', message: 'offline', error: new Error('net::ERR_INTERNET_DISCONNECTED') }),
+    };
     internals.apiClient = {
         isAuthInvalidated: () => false,
         updateSettings: jest.fn(),
@@ -60,6 +82,9 @@ function makePlugin(state: PluginState = { tokens: false, account: null }) {
         startWatching: jest.fn(),
         startAutoSync: jest.fn(),
         getLastProcessingStatus: () => null,
+        getTrackedFileCount: () => 1,
+        getLastSyncTime: () => null,
+        setUserId: jest.fn(),
     };
     return p;
 }
@@ -88,19 +113,44 @@ function controlKeys(items: unknown[]): string[] {
 describe('the settings tab', () => {
     it('keeps every setting the old tab had, and each is searchable', () => {
         const disconnected = renderTab(makePlugin());
-        const offered = rendered().filter(s => s.searchable).map(s => s.name);
+        const offered = rendered().filter(s => s.searchable).map(s => s.searchName);
         expect(offered).toEqual(expect.arrayContaining([
             'Connect to Pensio', 'Setup code',
             'Folder 1', 'People folder', 'Auto-sync',
-            'Documentation', 'Report an issue',
             'Server URL', 'Mirror delete', 'Debug mode',
             'Access token', 'Refresh token', 'Test connection',
         ]));
         expect(disconnected.settingItems.length).toBeGreaterThan(0);
 
         renderTab(makePlugin({ tokens: true, account: { email: 'her@example.com' } }));
-        const connected = rendered().filter(s => s.searchable).map(s => s.name);
-        expect(connected).toEqual(expect.arrayContaining(['Open Pensio', 'Manage devices', 'Disconnect']));
+        const connected = rendered().filter(s => s.searchable).map(s => s.searchName);
+        expect(connected).toEqual(expect.arrayContaining(['Open Pensio', 'Manage devices', 'Connect again', 'Disconnect']));
+    });
+
+    it('draws the tab in this order: the card, folders, Sync, the account, Advanced', () => {
+        const onTheTab = () => rendered().filter(s => s.page === undefined).map(s => s.searchName);
+
+        renderTab(makePlugin());
+        expect(onTheTab()).toEqual(['Connect to Pensio', 'Setup code', 'Folder 1', 'People folder', 'Auto-sync', 'Advanced']);
+
+        renderTab(makePlugin({ tokens: true, account: { email: 'her@example.com' } }));
+        expect(onTheTab()).toEqual([
+            'Connection', 'Folder 1', 'People folder', 'Auto-sync',
+            'Emotion analysis', 'Open Pensio', 'Manage devices', 'Connect again', 'Disconnect',
+            'Advanced',
+        ]);
+    });
+
+    it('Advanced is a page, and settings search still reaches every setting on it', () => {
+        renderTab(makePlugin());
+
+        const advanced = rendered().find(s => s.searchName === 'Advanced');
+        expect(advanced?.opensPage).toBe(true);
+        const onThePage = rendered().filter(s => s.page === 'Advanced');
+        expect(onThePage.map(s => s.searchName)).toEqual([
+            'Server URL', 'Mirror delete', 'Debug mode', 'Access token', 'Refresh token', 'Test connection',
+        ]);
+        expect(onThePage.every(s => s.searchable)).toBe(true);
     });
 
     it('keeps the sync state when a setting changes', async () => {
@@ -171,7 +221,7 @@ describe('the settings tab', () => {
         list().addItem!.action({} as HTMLElement);
         await settle();
         expect(p.settings.journalFolders).toEqual([{ folder: 'Journal' }, { folder: '' }]);
-        expect(rendered().map(s => s.name)).toContain('Folder 2');
+        expect(rendered().map(s => s.searchName)).toContain('Folder 2');
 
         list().onDelete!(0);
         await settle();

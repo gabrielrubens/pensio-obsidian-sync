@@ -40,90 +40,93 @@ export class PensioSettingTab extends PluginSettingTab {
         this.connection = new ConnectionSection(plugin, () => this.update());
     }
 
+    /**
+     * Design "B · Status card" (plugin 0.7.0), top to bottom: the status
+     * card; the setup code while there is no working connection; the journal
+     * folders; Sync; the account once connected; Advanced, a sub-page.
+     * 📐 docs/features/obsidian-plugin.md "The settings screen".
+     */
     getSettingDefinitions(): SettingDefinitionItem[] {
         return [
-            this.brandingDefinition(),
-            { type: 'group', heading: 'Connection', items: this.connection.definitions() },
+            this.connection.cardDefinition(),
+            ...this.connection.pairingDefinitions(),
             this.journalFolderList(),
             {
                 type: 'group',
+                heading: 'Sync',
                 items: [
                     {
                         name: 'People folder',
-                        desc:
-                            'Each .md file becomes a relationship in Pensio. ' +
-                            'Use [[Name]] wikilinks in journal entries to connect entries to people automatically.',
+                        desc: 'One note per person. [[Name]] links them to entries.',
                         control: { type: 'folder', key: 'peopleFolder', placeholder: 'People' },
                     },
                     {
                         name: 'Auto-sync',
-                        desc: 'Automatically sync when files change and run periodic sync every 5 minutes',
+                        desc: 'On every change, and every 5 minutes.',
                         control: { type: 'toggle', key: 'autoSync' },
                     },
                 ],
             },
-            {
-                type: 'group',
-                heading: 'Links',
-                items: [
-                    {
-                        name: 'Documentation',
-                        desc: 'Setup guide, features, and troubleshooting',
-                        action: () => {
-                            window.open('https://pensio.app/features/obsidian-sync/');
-                        },
-                    },
-                    {
-                        name: 'Report an issue',
-                        desc: 'Found a bug or have a suggestion?',
-                        action: () => {
-                            window.open('https://github.com/gabrielrubens/pensio-obsidian-sync/issues');
-                        },
-                    },
-                ],
-            },
-            {
-                type: 'group',
-                heading: 'Advanced',
-                items: [
-                    {
-                        name: 'Server URL',
-                        desc: 'For development or testing only',
-                        control: { type: 'text', key: 'apiUrl', placeholder: 'https://pensio.app' },
-                    },
-                    {
-                        name: 'Mirror delete',
-                        desc:
-                            'Delete server entries that no longer exist in your vault. ' +
-                            'Only affects entries created by this plugin — web-created entries are never touched. Use with caution.',
-                        control: { type: 'toggle', key: 'enableMirrorDelete' },
-                    },
-                    {
-                        name: 'Debug mode',
-                        desc: 'Enable verbose console logging for troubleshooting',
-                        control: { type: 'toggle', key: 'debugMode' },
-                    },
-                    // Manual token entry — for self-hosters who prefer pasting
-                    // JWTs over connecting. The normal path is Connect above.
-                    // ⚠️ Not a `secret` control: that one stores the NAME of a
-                    // secret the person picks from Obsidian's keychain, and these
-                    // are the token values themselves, kept by the plugin.
-                    this.tokenDefinition(
-                        'Access token',
-                        'Manual token entry (advanced) — prefer Connect',
-                        () => this.plugin.getAccessToken(),
-                        (value) => this.plugin.setTokens(value, this.plugin.getRefreshToken()),
-                    ),
-                    this.tokenDefinition(
-                        'Refresh token',
-                        'Both tokens are required when entered manually',
-                        () => this.plugin.getRefreshToken(),
-                        (value) => this.plugin.setTokens(this.plugin.getAccessToken(), value),
-                    ),
-                    this.connection.testDefinition(),
-                ],
-            },
+            ...this.connection.accountDefinitions(),
+            this.advancedPage(),
         ];
+    }
+
+    /**
+     * Advanced, as a sub-page: six settings almost nobody needs, which used to
+     * be the longest group on the tab. Settings search still finds each one
+     * (Obsidian indexes the items of a declarative page).
+     */
+    private advancedPage(): SettingDefinitionItem {
+        return {
+            type: 'page',
+            name: 'Advanced',
+            desc: 'Server URL, mirror delete, tokens, debug',
+            items: [
+                {
+                    type: 'group',
+                    items: [
+                        {
+                            name: 'Server URL',
+                            desc: 'Only for a self-hosted server.',
+                            control: { type: 'text', key: 'apiUrl', placeholder: 'https://pensio.app' },
+                        },
+                        {
+                            name: 'Mirror delete',
+                            desc: 'Deleting a note deletes its entry. Entries written on the web are safe.',
+                            control: { type: 'toggle', key: 'enableMirrorDelete' },
+                        },
+                        {
+                            name: 'Debug mode',
+                            desc: 'Logs to the developer console.',
+                            control: { type: 'toggle', key: 'debugMode' },
+                        },
+                        // Manual token entry — for self-hosters who prefer pasting
+                        // JWTs over connecting. The normal path is the card's
+                        // Connect to Pensio.
+                        // ⚠️ Not a `secret` control: that one stores the NAME of a
+                        // secret the person picks from Obsidian's keychain, and these
+                        // are the token values themselves, kept by the plugin.
+                        // ⛔ tests/core/test_the_connection_flow_has_one_door.py reads
+                        // this file for `tokenDefinition('Access token'`: the web's
+                        // manual-token steps name the field.
+                        this.tokenDefinition(
+                            'Access token',
+                            'For pasting tokens by hand.',
+                            () => this.plugin.getAccessToken(),
+                            (value) => this.plugin.setTokens(value, this.plugin.getRefreshToken()),
+                        ),
+                        this.tokenDefinition(
+                            'Refresh token',
+                            'Paste both, then test.',
+                            () => this.plugin.getRefreshToken(),
+                            (value) => this.plugin.setTokens(this.plugin.getAccessToken(), value),
+                        ),
+                        this.connection.testDefinition(),
+                    ],
+                },
+            ],
+        };
     }
 
     getControlValue(key: string): unknown {
@@ -163,29 +166,6 @@ export class PensioSettingTab extends PluginSettingTab {
     }
 
     /**
-     * The Pensio branding row at the top of settings.
-     */
-    private brandingDefinition(): SettingDefinition {
-        return {
-            name: 'Pensio',
-            desc: 'AI-powered journaling \u2014 emotion tracking, insights, relationship mapping, and an AI advisor that knows your entire journal.',
-            searchable: false,
-            render: (setting) => {
-                setting.setClass('pensio-branding');
-                setting.nameEl.prepend(setting.nameEl.createSpan({ text: '✦ ', cls: 'pensio-branding-icon' }));
-                setting.nameEl.createSpan({ text: 'Beta', cls: 'pensio-beta-badge' });
-
-                const learnMore = setting.descEl.createEl('a', {
-                    text: 'Learn more at pensio.app',
-                    href: 'https://pensio.app',
-                    cls: 'pensio-branding-link',
-                });
-                learnMore.setAttr('target', '_blank');
-            },
-        };
-    }
-
-    /**
      * The journal folders: every .md file inside one syncs as an entry.
      */
     private journalFolderList(): SettingDefinitionItem {
@@ -194,9 +174,10 @@ export class PensioSettingTab extends PluginSettingTab {
             heading: 'Journal folders',
             emptyState:
                 'Add a folder, and every .md file in it syncs as a Daily Journal entry.',
+            // ⭐ No description per folder: the same sentence under every
+            // folder was most of the words on the old tab.
             items: this.plugin.settings.journalFolders.map((_, index) => ({
                 name: `Folder ${index + 1}`,
-                desc: 'All .md files sync as Daily Journal entries. Use frontmatter "type:" to override per file.',
                 control: { type: 'folder' as const, key: journalFolderKey(index), placeholder: 'Folder path' },
             })),
             addItem: {

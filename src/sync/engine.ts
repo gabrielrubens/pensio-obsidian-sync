@@ -1,5 +1,7 @@
 import { App, TAbstractFile, TFile, TFolder } from 'obsidian';
 import { ApiClient } from '../api/client';
+import { RefreshError } from '../auth/tokenManager';
+import { SyncFailure } from '../errors';
 import { debugLog } from '../logger';
 import { BulkSyncItem, CreateEntryRequest, CreatePersonRequest, PensioSettings, ProcessingStatus, SyncedFileInfo, SyncStateData } from '../types';
 import { computeContentHash } from './hash';
@@ -51,6 +53,18 @@ export class SyncEngine {
      * user-visible feedback unless something reports back here.
      */
     onProcessingStatus: ((status: ProcessingStatus) => void) | null = null;
+
+    /**
+     * Called when an AUTOMATIC sync (on startup, on a change, every five
+     * minutes) fails. ⛔ Before 0.7.0 those failures went to the console and
+     * nowhere else: no Notice, no status bar, so a vault could stop syncing
+     * for days with nothing on screen. A sync she asked for is reported by
+     * whoever asked (`PensioPlugin.syncNow`), so it does not come here.
+     */
+    onSyncFailed: ((error: unknown) => void) | null = null;
+
+    /** Called after every sync that finished with nothing left failing. */
+    onSyncSucceeded: (() => void) | null = null;
 
     // Bind handlers once to preserve reference for cleanup
     private readonly boundOnFileChanged: (file: TAbstractFile) => void;
@@ -130,6 +144,7 @@ export class SyncEngine {
                     debugLog('Initial sync completed');
                 } catch (error) {
                     console.error('Initial sync failed:', error);
+                    this.onSyncFailed?.(error);
                 }
             })();
         }, this.INITIAL_SYNC_DELAY_MS);
@@ -152,6 +167,7 @@ export class SyncEngine {
                     await this.syncAll(false);
                 } catch (error) {
                     console.error('Periodic sync failed:', error);
+                    this.onSyncFailed?.(error);
                 }
             })();
         }, this.SYNC_INTERVAL_MS);
@@ -378,6 +394,7 @@ export class SyncEngine {
                     await this.syncAll(false);
                 } catch (error) {
                     console.error('Watcher-triggered sync failed:', error);
+                    this.onSyncFailed?.(error);
                 }
             })();
         }, this.WATCHER_SYNC_DEBOUNCE_MS);
@@ -505,6 +522,11 @@ export class SyncEngine {
         return this.syncedFiles.size;
     }
 
+    /** When the last sync with nothing failing finished (ms), or null. */
+    getLastSyncTime(): number | null {
+        return this.lastSyncTime;
+    }
+
     getState(): SyncStateData {
         const files: Record<string, SyncedFileInfo> = {};
         for (const [path, info] of this.syncedFiles) {
@@ -604,7 +626,7 @@ export class SyncEngine {
 
     async syncAll(forceSync: boolean = false): Promise<{ synced: number; skipped: number; errors: number; total: number }> {
         if (this.apiClient.isAuthInvalidated()) {
-            throw new Error('Authentication expired. Please log in again in Pensio settings.');
+            throw new RefreshError('auth-invalid', 'Pensio session expired \u2014 reconnect in the plugin settings');
         }
         if (this.isSyncing) {
             debugLog('syncAll skipped — already in progress');
@@ -636,6 +658,8 @@ export class SyncEngine {
             debugLog(`Found ${filesToSync.length} files to check`);
 
             const errors: string[] = [];
+            // The first request that failed outright, so the notice can say why.
+            let underlying: unknown;
             const entryItems: BulkSyncItem[] = [];
             const peopleItems: BulkSyncItem[] = [];
             const trackingDeferred = new Map<string, { file: TFile; hash: string }>();
@@ -723,6 +747,7 @@ export class SyncEngine {
                     }
                 } catch (error) {
                     console.error('Bulk entry sync failed:', error);
+                    underlying ??= error;
                     errors.push(`Bulk sync chunk: ${(error as Error).message || error}`);
                 }
             }
@@ -754,6 +779,7 @@ export class SyncEngine {
                     }
                 } catch (error) {
                     console.error('Bulk people sync failed:', error);
+                    underlying ??= error;
                     errors.push(`Bulk sync chunk: ${(error as Error).message || error}`);
                 }
             }
@@ -764,6 +790,7 @@ export class SyncEngine {
                     await this.mirrorDelete(filesToSync);
                 } catch (error) {
                     console.error('Mirror delete failed:', error);
+                    underlying ??= error;
                     errors.push(`Mirror delete: ${(error as Error).message || error}`);
                 }
             }
@@ -783,8 +810,9 @@ export class SyncEngine {
             this.notifyProcessingStatus();
 
             if (errors.length > 0) {
-                throw new Error(`Sync completed with ${errors.length} error(s): ${errors[0]}`);
+                throw new SyncFailure(errors, underlying);
             }
+            this.onSyncSucceeded?.();
 
             // Return summary for callers that want to show results
             return { synced: syncedCount, skipped: skippedCount, errors: errors.length, total: filesToSync.length };

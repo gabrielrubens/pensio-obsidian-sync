@@ -39,3 +39,20 @@ export class HttpError extends Error {
         this.name = 'HttpError';
     }
 }
+
+/**
+ * A sync that ran but could not finish everything.
+ *
+ * ⭐ `underlying` is the first request that failed outright (offline, a server
+ * error, a stopped connection), so a notice can say *which*. Before 0.7.0 the
+ * engine threw a plain Error whose message was its own bookkeeping — "Sync
+ * completed with 1 error(s): Bulk sync chunk: net::ERR_…" — and that was the
+ * whole notice, for a few seconds. `problems` are the per-note lines, kept
+ * for the console.
+ */
+export class SyncFailure extends Error {
+    constructor(readonly problems: string[], readonly underlying?: unknown) {
+        super(`Sync completed with ${problems.length} error(s): ${problems[0]}`);
+        this.name = 'SyncFailure';
+    }
+}

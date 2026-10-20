@@ -15,7 +15,7 @@ Sync your journal to [Pensio](https://pensio.app) for AI-powered journaling insi
 
 This plugin connects your Obsidian vault to Pensio so you can keep writing in your favorite editor while Pensio adds the intelligence layer on top.
 
-![Pensio Journaling Sync settings in Obsidian — connect with a one-time setup code and choose which folders to sync](https://raw.githubusercontent.com/gabrielrubens/pensio-obsidian-sync/main/docs/screenshot.png)
+![Pensio Journaling Sync settings in Obsidian — Connect to Pensio with the setup code beneath it, then the journal folders to sync](https://raw.githubusercontent.com/gabrielrubens/pensio-obsidian-sync/main/docs/screenshot.png)
 
 ## Features
 
@@ -23,9 +23,10 @@ This plugin connects your Obsidian vault to Pensio so you can keep writing in yo
 - **Selective sync** — only configured folders are synced; everything else stays local
 - **Multi-folder support** — map multiple vault folders for sync
 - **Frontmatter aware** — entry type and date extracted from YAML front matter
-- **Secure authentication** — one-time pairing code, per-device tokens with automatic refresh, stored via Obsidian's SecretStorage
+- **Connect from Obsidian** — press **Connect to Pensio**, and Pensio opens in your browser to approve the vault or hand you a one-time setup code; no passwords or long tokens to copy
+- **Secure authentication** — per-device tokens with automatic refresh, stored via Obsidian's SecretStorage
 - **Account safety** — detects account switches and prevents cross-account data leaks
-- **People folder sync** — dedicated folder for relationship notes, synced as Pensio relationship profiles
+- **People folder sync** — dedicated folder for relationship notes, synced as Pensio relationship profiles, aliases included
 - **Renames follow your notes** — rename or move a note and its Pensio entry moves with it, keeping its emotion reading and links. Moving a note out of your synced folders keeps its entry
 - **Deletes follow your vault** — deleting a note in Obsidian deletes the entry the plugin made from it (only plugin-created entries, never web ones)
 - **Mirror delete** (opt-in) — also removes entries whose notes left your synced folders while Obsidian was closed or outside it
@@ -56,9 +57,9 @@ Want the newest build before it reaches the directory? Install [BRAT](https://gi
 ## Setup
 
 1. **Create a Pensio account** at [pensio.app/register](https://pensio.app/register/)
-2. **Connect** — open Obsidian Settings → Pensio Journaling Sync, press **Connect to Pensio** and approve the vault in your browser
-3. **No browser round trip?** Open [Connect Obsidian](https://pensio.app/tokens/pair-obsidian/), generate a one-time setup code, enter it under **Setup code** and press **Use code**
-4. **Configure folders** — add your vault folders to sync (default: `Journal`)
+2. **Connect** — open Obsidian Settings → Pensio Journaling Sync and press **Connect to Pensio**. Your browser opens Pensio: approve the vault there, or, if Pensio gives you a one-time setup code instead, enter it under **Setup code** and press **Use code**
+3. **Browser doesn't come back to Obsidian?** Open [Connect Obsidian](https://pensio.app/tokens/pair-obsidian/) yourself, generate a setup code, enter it under **Setup code** and press **Use code**
+4. **Configure folders** — under **Journal folders**, press **+** to add each vault folder to sync (default: `Journal`); each row has its own delete button
 
 Auto-sync is on by default. Entries sync as you write.
 
@@ -83,8 +84,9 @@ Access via Command Palette (Ctrl/Cmd + P):
 - **Cloud** idle — ready to sync (shows tracked file count)
 - **Spinner** syncing — in progress
 - **Check** success — sync completed (shows files synced)
-- **Warning** error — sync failed (check console for details)
-- **Cloud off** reconnect — session expired; enter a new setup code in settings (your notes and sync history are untouched)
+- **Warning** *Pensio sync failed* — stays until a sync works; click it to read why and what to do
+- **Cloud off** *Pensio offline* — Pensio could not be reached; the plugin tries again every 5 minutes
+- **Cloud off** reconnect — the connection stopped or expired; press **Connect to Pensio** in settings (your notes and sync history are untouched)
 
 ### Frontmatter
 
@@ -174,7 +176,16 @@ People:
 ---
 ```
 
-Configure the People folder path in Settings → Pensio Journaling Sync → Advanced. Set it to empty to disable people sync.
+#### Aliases
+
+How a note's `aliases:` behaves on sync:
+
+- One alias can sit on a single line: `aliases: Em`.
+- To clear a person's aliases from the vault, write `aliases: []`. Leaving the key out changes nothing, so aliases you added on the web stay.
+- Each alias follows the same rule as a name (one line, a human length). One that breaks it is dropped and the rest still sync; two that differ only in capitals count once.
+- A person you added on the web keeps what you gave them there: a note fills in only what they don't have yet, so it gives aliases to someone with none and never replaces theirs.
+
+Set the People folder in Settings → Pensio Journaling Sync, just below the journal folders, beside **Auto-sync**. Leave it empty to turn people sync off.
 
 ## What you get on Pensio
 
@@ -193,7 +204,7 @@ All of this happens on the web — your markdown files in Obsidian stay untouche
 | What | Details |
 |---|---|
 | **Transport** | All communication over HTTPS |
-| **Authentication** | One-time pairing code → per-device JWT family; short-lived access tokens, refresh tokens renewed automatically (sliding reissue) |
+| **Authentication** | **Connect to Pensio** (approved in your browser, PKCE) or a one-time setup code → per-device JWT family; short-lived access tokens, refresh tokens renewed automatically (sliding reissue) |
 | **Token storage** | Obsidian SecretStorage, write-verified — backed by the OS keychain on desktop; app-local (never inside your vault files, never synced with the vault) on mobile |
 | **Data sent** | Markdown content, file paths, timestamps from configured folders only |
 | **Data NOT sent** | Files outside sync folders, `.obsidian` config, plugin settings, vault structure |
@@ -206,12 +217,13 @@ For a full overview of the plugin and Pensio's features, see the [Obsidian Sync 
 ## Troubleshooting
 
 ### "Connection failed"
-- Verify the server URL includes `https://`
-- Generate a fresh setup code from the Connect Obsidian page and pair again
+- Press **Connect to Pensio** again, or generate a fresh setup code on the [Connect Obsidian](https://pensio.app/tokens/pair-obsidian/) page, enter it under **Setup code** and press **Use code**
+- Self-hosting? Check the server URL under **Advanced** includes `https://`
 - Check network connectivity
 
 ### "Session expired"
-- The plugin never deletes anything on failures — enter a new setup code in Settings → Pensio Journaling Sync to reconnect and syncing resumes where it left off
+- The plugin never deletes anything on failures — press **Connect to Pensio** in Settings → Pensio Journaling Sync to reconnect, and syncing resumes where it left off
+- A connection also ends a year after it was made, or when it is stopped in Pensio → Settings → Connected apps; reconnect the same way
 
 ### Files not syncing
 - Confirm the file is inside a configured sync folder
