@@ -15,6 +15,7 @@ export interface SyncStatusHost {
     statusBar(): HTMLElement | null;
     isAuthInvalidated(): boolean;
     trackedCount(): number;
+    /** How to word a sync failure: retries is true only while auto-sync runs. */
     failureContext(): FailureContext;
 }
 
@@ -114,12 +115,11 @@ export class SyncStatus {
             return;
         }
         if (this.problem) {
-            const offline = this.problem.explanation.kind === 'offline';
-            this.paint(
-                offline ? 'cloud-off' : 'alert-triangle',
-                offline ? 'Pensio offline' : 'Pensio sync failed',
-                `Pensio: ${this.problem.message}`,
-            );
+            const { kind } = this.problem.explanation;
+            const [icon, text] = kind === 'offline' ? ['cloud-off', 'Pensio offline']
+                : kind === 'busy' ? ['clock', 'Pensio busy']
+                    : ['alert-triangle', 'Pensio sync failed'];
+            this.paint(icon, text, `Pensio: ${this.problem.message}`);
             return;
         }
         const tracked = this.host.trackedCount();
@@ -153,6 +153,11 @@ export class SyncStatus {
         this.problem = null;
         this.problemNotice?.hide();
         this.problemNotice = null;
+    }
+
+    /** Something the card shows changed (the account check started or ended). */
+    changed(): void {
+        this.emit();
     }
 
     private emit(): void {

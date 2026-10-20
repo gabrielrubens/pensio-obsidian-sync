@@ -29,12 +29,48 @@
  * - Advanced as a plain group instead of `type: 'page'` → "Advanced is a
  *   page" RED;
  * - the Sync group moved above the journal folders → "in this order" RED.
+ *
+ * 0.7.1: the mock draws the tab the way Obsidian 1.14.4 does (rows reused, a
+ * sub-page's rows only while it is open), so what search can find is read
+ * from the definitions, as Obsidian indexes them. And the manual token fields
+ * apply only a whole pair (review F5). Re-checked (2026-10-20), each alone
+ * then restored:
+ * - tokenDefinition applying each keystroke again → "typing in a token field"
+ *   RED;
+ * - applyTokenDraft without the both-empty branch → "emptying both fields" RED.
  */
 import { Setting } from 'obsidian';
 import PensioPlugin from '../main';
 import { PensioSettingTab } from '../settings';
 
+type FakeText = { value: string; type: (value: string) => Promise<void> };
+type Tab = PensioSettingTab & { open: () => void; openPage: (name: string) => void };
+
+/** A token shaped like Pensio's: a JWT whose payload names the account. */
+function token(userId: string, kind: 'access' | 'refresh'): string {
+    const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify({ token_type: kind, user_id: userId })).toString('base64url');
+    return `${header}.${payload}.signature`;
+}
+
+interface Indexed { name: string; searchable: boolean; page?: string }
+/** What Obsidian's settings search indexes: every definition, sub-pages included. */
+function searchIndex(items: unknown[], page?: string): Indexed[] {
+    const found: Indexed[] = [];
+    for (const item of items as Array<{ type?: string; name?: string; items?: unknown[]; searchable?: boolean | (() => boolean) }>) {
+        if (item.type === 'group' || item.type === 'list') {
+            found.push(...searchIndex(item.items ?? [], page));
+            continue;
+        }
+        const searchable = typeof item.searchable === 'function' ? item.searchable() : item.searchable !== false;
+        found.push({ name: item.name ?? '', searchable, page });
+        if (item.type === 'page') found.push(...searchIndex(item.items ?? [], item.name));
+    }
+    return found;
+}
+
 type FakeSetting = {
+    texts: FakeText[];
     searchName: string;
     group: string | undefined;
     page: string | undefined;
@@ -94,11 +130,19 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 
 const saveData = (p: PensioPlugin) => (p as unknown as { saveData: jest.Mock }).saveData;
 
-function renderTab(p: PensioPlugin) {
-    const tab = new PensioSettingTab({} as never, p);
+/** She opens the plugin's settings. */
+function renderTab(p: PensioPlugin): Tab {
+    const tab = new PensioSettingTab({} as never, p) as Tab;
     tab.update();
+    tab.open();
     return tab;
 }
+
+const field = (name: string): FakeText => {
+    const row = rendered().find(s => s.searchName === name);
+    if (!row) throw new Error(`no ${name}`);
+    return row.texts[0];
+};
 
 /** Every control definition, wherever it sits in groups and lists. */
 function controlKeys(items: unknown[]): string[] {
@@ -113,7 +157,7 @@ function controlKeys(items: unknown[]): string[] {
 describe('the settings tab', () => {
     it('keeps every setting the old tab had, and each is searchable', () => {
         const disconnected = renderTab(makePlugin());
-        const offered = rendered().filter(s => s.searchable).map(s => s.searchName);
+        const offered = searchIndex(disconnected.settingItems).filter(s => s.searchable).map(s => s.name);
         expect(offered).toEqual(expect.arrayContaining([
             'Connect to Pensio', 'Setup code',
             'Folder 1', 'People folder', 'Auto-sync',
@@ -122,8 +166,8 @@ describe('the settings tab', () => {
         ]));
         expect(disconnected.settingItems.length).toBeGreaterThan(0);
 
-        renderTab(makePlugin({ tokens: true, account: { email: 'her@example.com' } }));
-        const connected = rendered().filter(s => s.searchable).map(s => s.searchName);
+        const tab = renderTab(makePlugin({ tokens: true, account: { email: 'her@example.com' } }));
+        const connected = searchIndex(tab.settingItems).filter(s => s.searchable).map(s => s.name);
         expect(connected).toEqual(expect.arrayContaining(['Open Pensio', 'Manage devices', 'Connect again', 'Disconnect']));
     });
 
@@ -134,23 +178,61 @@ describe('the settings tab', () => {
         expect(onTheTab()).toEqual(['Connect to Pensio', 'Setup code', 'Folder 1', 'People folder', 'Auto-sync', 'Advanced']);
 
         renderTab(makePlugin({ tokens: true, account: { email: 'her@example.com' } }));
+        // Emotion analysis is drawn once there is a reading to show.
         expect(onTheTab()).toEqual([
             'Connection', 'Folder 1', 'People folder', 'Auto-sync',
-            'Emotion analysis', 'Open Pensio', 'Manage devices', 'Connect again', 'Disconnect',
+            'Open Pensio', 'Manage devices', 'Connect again', 'Disconnect',
             'Advanced',
         ]);
     });
 
     it('Advanced is a page, and settings search still reaches every setting on it', () => {
-        renderTab(makePlugin());
+        const tab = renderTab(makePlugin());
 
         const advanced = rendered().find(s => s.searchName === 'Advanced');
         expect(advanced?.opensPage).toBe(true);
-        const onThePage = rendered().filter(s => s.page === 'Advanced');
-        expect(onThePage.map(s => s.searchName)).toEqual([
-            'Server URL', 'Mirror delete', 'Debug mode', 'Access token', 'Refresh token', 'Test connection',
-        ]);
-        expect(onThePage.every(s => s.searchable)).toBe(true);
+        const ADVANCED = ['Server URL', 'Mirror delete', 'Debug mode', 'Access token', 'Refresh token', 'Test connection'];
+        const indexed = searchIndex(tab.settingItems).filter(s => s.page === 'Advanced');
+        expect(indexed.map(s => s.name)).toEqual(ADVANCED);
+        expect(indexed.every(s => s.searchable)).toBe(true);
+
+        tab.openPage('Advanced');
+        expect(rendered().map(s => s.searchName)).toEqual(ADVANCED);
+    });
+
+    it('typing in a token field applies nothing until both hold a whole pair', async () => {
+        const p = makePlugin();
+        const setTokens = jest.spyOn(p, 'setTokens').mockResolvedValue(undefined);
+        const forget = jest.spyOn(p, 'forgetTokens').mockResolvedValue(undefined);
+        const tab = renderTab(p);
+        tab.openPage('Advanced');
+
+        await field('Access token').type('eyJhbGciOi');               // half pasted
+        await field('Access token').type(token('her-id', 'access'));  // one whole token
+        expect(setTokens).not.toHaveBeenCalled();
+        expect(forget).not.toHaveBeenCalled();
+
+        await field('Refresh token').type(token('her-id', 'refresh'));
+        expect(setTokens).toHaveBeenCalledTimes(1);
+        expect(setTokens).toHaveBeenCalledWith(token('her-id', 'access'), token('her-id', 'refresh'));
+    });
+
+    it('emptying both fields forgets the tokens, and only then', async () => {
+        const p = makePlugin({ tokens: true, account: null });
+        const internals = p as unknown as Record<string, unknown>;
+        internals._accessToken = token('her-id', 'access');
+        internals._refreshToken = token('her-id', 'refresh');
+        const setTokens = jest.spyOn(p, 'setTokens').mockResolvedValue(undefined);
+        const forget = jest.spyOn(p, 'forgetTokens').mockResolvedValue(undefined);
+        const tab = renderTab(p);
+        tab.openPage('Advanced');
+
+        await field('Access token').type('');
+        expect(forget).not.toHaveBeenCalled();
+        await field('Refresh token').type('');
+
+        expect(forget).toHaveBeenCalledTimes(1);
+        expect(setTokens).not.toHaveBeenCalled();
     });
 
     it('keeps the sync state when a setting changes', async () => {

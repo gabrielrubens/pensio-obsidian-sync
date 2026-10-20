@@ -42,7 +42,34 @@ export type CallbackOutcome =
     | { kind: 'connected'; result: ConnectResult }
     | { kind: 'cancelled' }
     | { kind: 'not-ours' }
-    | { kind: 'expired' };
+    | { kind: 'expired' }
+    /** This approval already connected the vault: the link was opened twice. */
+    | { kind: 'already-used' };
+
+/** Where the waiting requests are kept: this device only, never synced. */
+export interface PendingStore {
+    load(): unknown;
+    save(value: unknown): void;
+}
+
+interface Saved {
+    pending?: Pending[];
+    used?: { state: string; at: number }[];
+}
+
+/** At most this many requests wait at once; the oldest goes first. */
+const MAX_PENDING = 5;
+
+function isUsed(value: unknown): value is { state: string; at: number } {
+    const u = value as { state?: unknown; at?: unknown };
+    return !!u && typeof u.state === 'string' && typeof u.at === 'number';
+}
+
+function isPending(value: unknown): value is Pending {
+    const p = value as Pending;
+    return !!p && typeof p.verifier === 'string' && typeof p.state === 'string'
+        && typeof p.deviceId === 'string' && typeof p.startedAt === 'number';
+}
 
 export interface Exchanger {
     (code: string, verifier: string, deviceId: string): Promise<ConnectResult>;
@@ -67,18 +94,65 @@ export async function challengeFor(verifier: string): Promise<string> {
 }
 
 export class OneClickConnect {
-    private pending: Pending | null = null;
-
-    constructor(private readonly exchange: Exchanger, private readonly now: () => number = Date.now) {}
-
     /**
-     * Begin a connection and return the page to open. A second press replaces
-     * the first: only the most recent request can complete.
+     * ⭐ Every request still waiting, each with its own state and verifier,
+     * kept in vault-local storage on this device (Obsidian's saveLocalStorage,
+     * never synced). ⛔ 0.7.0 kept one request in memory only, so a plugin
+     * reload or update while she approved, or a second press of Connect, made
+     * her real approval "not started from this vault" (review F24). Allowing
+     * several is as safe as one: a callback must carry one of OUR unguessable
+     * states, and its code works only with that request's verifier.
      */
+    private pending: Pending[] = [];
+    /** Requests that completed, so a link opened twice says so. */
+    private used: { state: string; at: number }[] = [];
+    private readonly store: PendingStore | null;
+    private readonly now: () => number;
+
+    constructor(
+        private readonly exchange: Exchanger,
+        options: { store?: PendingStore; now?: () => number } = {},
+    ) {
+        this.store = options.store ?? null;
+        this.now = options.now ?? Date.now;
+        this.restore();
+    }
+
+    private restore(): void {
+        try {
+            const loaded: unknown = this.store?.load() ?? null;
+            const saved: Saved = loaded && typeof loaded === 'object' ? loaded : {};
+            this.pending = (Array.isArray(saved.pending) ? saved.pending : []).filter(isPending);
+            this.used = (Array.isArray(saved.used) ? saved.used : []).filter(isUsed);
+            this.prune();
+        } catch {
+            this.pending = [];
+            this.used = [];
+        }
+    }
+
+    private prune(): void {
+        const now = this.now();
+        this.pending = this.pending.filter(p => now - p.startedAt < PENDING_TTL_MS).slice(-MAX_PENDING);
+        this.used = this.used.filter(u => now - u.at < PENDING_TTL_MS).slice(-MAX_PENDING);
+    }
+
+    private persist(): void {
+        try {
+            this.store?.save({ pending: this.pending, used: this.used });
+        } catch {
+            // Storage refused: the request still completes while Obsidian runs.
+        }
+    }
+
+    /** Begin a connection and return the page to open. */
     async start(apiUrl: string, deviceId: string, deviceName: string, vault = ''): Promise<string> {
         const verifier = randomString(32);
         const state = randomString(16);
-        this.pending = { verifier, state, deviceId, startedAt: this.now() };
+        this.prune();
+        this.pending.push({ verifier, state, deviceId, startedAt: this.now() });
+        this.pending = this.pending.slice(-MAX_PENDING);
+        this.persist();
 
         const params = new URLSearchParams({
             challenge: await challengeFor(verifier),
@@ -94,27 +168,48 @@ export class OneClickConnect {
     }
 
     isWaiting(): boolean {
-        return this.pending !== null && this.now() - this.pending.startedAt < PENDING_TTL_MS;
+        return this.pending.some(p => this.now() - p.startedAt < PENDING_TTL_MS);
     }
 
     /** obsidian://pensio-connect landed. Never throws for a callback that is
      * not ours; the exchange's own failure (an expired code) does throw. */
     async handleCallback(params: Record<string, string | undefined>): Promise<CallbackOutcome> {
-        const pending = this.pending;
-        if (!pending || !params.state || params.state !== pending.state) {
-            // Not started here, or a stale tab, or forged: touch nothing.
+        const state = params.state;
+        const pending = state ? this.pending.find(p => p.state === state) : undefined;
+        if (!pending) {
+            if (state && this.used.some(u => u.state === state)) return { kind: 'already-used' };
+            // Not started here, or forged: touch nothing.
             return { kind: 'not-ours' };
         }
-        // From here the request is spent, whatever happens: one callback each.
-        this.pending = null;
+        const spend = () => {
+            this.pending = this.pending.filter(p => p !== pending);
+            this.persist();
+        };
 
         if (this.now() - pending.startedAt >= PENDING_TTL_MS) {
+            spend();
             return { kind: 'expired' };
         }
         if (params.error || !params.code) {
+            spend();
             return { kind: 'cancelled' };
         }
-        const result = await this.exchange(params.code, pending.verifier, pending.deviceId);
+        let result: ConnectResult;
+        try {
+            result = await this.exchange(params.code, pending.verifier, pending.deviceId);
+        } catch (error) {
+            // ⭐ A refusal spends the request. A failure that may pass (no
+            // answer, a server error, a rate limit) keeps it, so opening the
+            // browser's link again can still finish the approval she gave.
+            const status = (error as { status?: unknown })?.status;
+            const definite = typeof status === 'number' && status >= 400 && status < 500 && status !== 429;
+            if (definite) spend();
+            throw error;
+        }
+        spend();
+        this.used.push({ state: pending.state, at: this.now() });
+        this.prune();
+        this.persist();
         return { kind: 'connected', result };
     }
 }

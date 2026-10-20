@@ -9,6 +9,16 @@
  * - 400s carrying reauth_required / token_not_valid markers count as
  *   auth-invalid; anything else is transient
  * - getAccessToken never returns a stale token after a failed refresh
+ *
+ * Plugin 0.7.1 (review of 2026-10-20), each sabotage-checked that day, alone,
+ * then restored:
+ * - a 401 whose refresh failed for a passing reason is rethrown with what the
+ *   server said, not reported as a dead session (F22) — handleUnauthorized
+ *   returning null again → "rethrows a passing failure" RED;
+ * - a 429 is not retried inside the refresh, and carries its Retry-After
+ *   (F20) — `break` removed → "a 429 is not retried" RED;
+ * - a refresh that lands after new tokens were taken is dropped (F23) — the
+ *   generation check removed → "a refresh in flight" RED.
  */
 
 import { requestUrl } from 'obsidian';
@@ -265,14 +275,15 @@ describe('TokenManager', () => {
             expect(tokens?.accessToken).toBeTruthy();
         });
 
-        it('returns null on failure without wiping tokens', async () => {
+        it('rethrows a passing failure, with what the server said, without wiping tokens', async () => {
             await manager.initialize(FRESH_ACCESS(), REFRESH_TOKEN);
             mockRequestUrl.mockResolvedValue({ status: 503, json: {} });
 
-            const tokens = await manager.handleUnauthorized();
+            const error = await expectRefreshError(manager.handleUnauthorized(), 'transient');
 
-            expect(tokens).toBeNull();
+            expect(error.status).toBe(503);
             expect(manager.hasTokens()).toBe(true);
+            expect(manager.isAuthInvalidated()).toBe(false);
             expect(persisted).not.toContain(null);
         });
 
@@ -284,6 +295,41 @@ describe('TokenManager', () => {
 
             expect(await manager.handleUnauthorized()).toBeNull();
             expect(mockRequestUrl).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('limits and replaced tokens', () => {
+        it('a 429 is not retried inside the refresh, and says when to try again', async () => {
+            await manager.initialize(EXPIRING_ACCESS(), REFRESH_TOKEN);
+            mockRequestUrl.mockResolvedValue({
+                status: 429,
+                headers: { 'Retry-After': '120' },
+                json: { error: { code: 'rate_limited', message: 'Rate limit exceeded.', scope: 'network_refresh' } },
+            });
+
+            const error = await expectRefreshError(manager.getAccessToken(), 'transient');
+
+            expect(mockRequestUrl).toHaveBeenCalledTimes(1);
+            expect(error.status).toBe(429);
+            expect(error.details).toEqual({ code: 'rate_limited', scope: 'network_refresh', retryAfter: 120 });
+            expect(manager.isAuthInvalidated()).toBe(false);
+        });
+
+        it('a refresh in flight when new tokens arrive is dropped, not written over them', async () => {
+            await manager.initialize(EXPIRING_ACCESS(), REFRESH_TOKEN);
+            let answer: (value: unknown) => void = () => undefined;
+            mockRequestUrl.mockImplementationOnce(() => new Promise(resolve => { answer = resolve; }));
+
+            const stale = manager.refreshToken();
+            await new Promise(resolve => setImmediate(resolve));
+            const fresh = FRESH_ACCESS();
+            await manager.initialize(fresh, 'the-new-connections-refresh');
+            answer(refreshSuccess(true));
+
+            const tokens = await stale;
+            expect(tokens.refreshToken).toBe('the-new-connections-refresh');
+            expect(await manager.getAccessToken()).toBe(fresh);
+            expect(persisted).toEqual([]);
         });
     });
 

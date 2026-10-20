@@ -6,85 +6,129 @@
  * `display()` are deprecated since Obsidian 1.13.0 and are deliberately
  * absent, so a call that brings one back throws in any test that reaches it
  * (lint refuses it too: `@typescript-eslint/no-deprecated`).
+ *
+ * ⭐ THE SETTINGS TAB RENDERS THE WAY OBSIDIAN 1.14.4 DOES (since plugin
+ * 0.7.1), read from its own app.js during the 2026-10-20 review:
+ * - `update()` rebuilds the definitions and redraws only while the tab is
+ *   open; `open()` and `close()` run every cleanup and start from fresh rows.
+ * - A redraw REUSES a row whose key matches (`id:`, `ctrl:<key>`,
+ *   `name:<name>` or `item#<i>`, inside a group keyed by `type:heading` or
+ *   `type#<i>`; loose top-level items share an anonymous group). For a reused
+ *   row it runs the cleanup `render` returned, empties only `controlEl`
+ *   (`Setting.clear()`), resets the name and the description, and calls
+ *   `render` again on the SAME Setting, so anything `render` put elsewhere in
+ *   `settingEl` is still there.
+ * - A sub-page's rows exist only while it is open (`openPage()`).
+ * ⛔ The mock before this built a fresh Setting on every update(), so the
+ * status card's brand line and icon piling up once per redraw (plugin 0.7.0,
+ * Gabriel's screenshots of 2026-10-20) could not happen in any test.
  */
 
-/** An element whose every method returns another element. */
-function fakeEl(): HTMLElement {
-    return new Proxy({} as Record<string | symbol, unknown>, {
-        get: (target, prop) => {
-            if (prop in target) return target[prop];
-            // Not a thenable: an awaited element must not hang the test.
-            if (prop === 'then') return undefined;
-            return () => fakeEl();
-        },
-    }) as unknown as HTMLElement;
+/** A small DOM: enough of Obsidian's element helpers to count what a row drew. */
+class FakeNode {
+    children: FakeNode[] = [];
+    parent: FakeNode | null = null;
+    classes = new Set<string>();
+    text = '';
+    attrs: Record<string, string> = {};
+    hidden = false;
+    constructor(public tag: string) {}
+    get firstChild(): FakeNode | null { return this.children[0] ?? null; }
+    /** Everything written into it and its children, in order. */
+    get textContent(): string { return this.text + this.children.map(c => c.textContent).join(''); }
+    appendChild(node: FakeNode) { node.detach(); node.parent = this; this.children.push(node); return node; }
+    insertBefore(node: FakeNode, ref: FakeNode | null) {
+        node.detach();
+        node.parent = this;
+        const at = ref ? this.children.indexOf(ref) : -1;
+        if (at < 0) this.children.push(node); else this.children.splice(at, 0, node);
+        return node;
+    }
+    removeChild(node: FakeNode) { this.children = this.children.filter(c => c !== node); node.parent = null; return node; }
+    detach() { this.parent?.removeChild(this); }
+    remove() { this.detach(); }
+    empty() { for (const child of [...this.children]) this.removeChild(child); this.text = ''; }
+    setText(text: string) { this.empty(); this.text = text; }
+    appendText(text: string) { const node = new FakeNode('#text'); node.text = text; this.appendChild(node); }
+    addClass(...classes: string[]) { classes.forEach(c => this.classes.add(c)); }
+    removeClass(...classes: string[]) { classes.forEach(c => this.classes.delete(c)); }
+    toggleClass(cls: string, on: boolean) { if (on) this.classes.add(cls); else this.classes.delete(cls); }
+    hasClass(cls: string) { return this.classes.has(cls); }
+    setAttr(key: string, value: string) { this.attrs[key] = value; }
+    setAttribute(key: string, value: string) { this.attrs[key] = value; }
+    hide() { this.hidden = true; }
+    show() { this.hidden = false; }
+    addEventListener() { /* no events in tests */ }
+    createEl(tag: string, options?: string | { cls?: string; text?: string; href?: string; prepend?: boolean }) {
+        const o = typeof options === 'string' ? { cls: options } : (options ?? {});
+        const el = new FakeNode(tag);
+        if (o.cls) o.cls.split(' ').filter(Boolean).forEach(c => el.classes.add(c));
+        if (o.text) el.setText(o.text);
+        if (o.href) el.attrs.href = o.href;
+        if (o.prepend) this.insertBefore(el, this.firstChild); else this.appendChild(el);
+        return el;
+    }
+    createDiv(options?: string | { cls?: string; text?: string; prepend?: boolean }) { return this.createEl('div', options); }
+    createSpan(options?: string | { cls?: string; text?: string; prepend?: boolean }) { return this.createEl('span', options); }
+    /** Every descendant carrying `cls`, depth first. */
+    find(cls: string): FakeNode[] {
+        const found: FakeNode[] = [];
+        const walk = (node: FakeNode) => { for (const child of node.children) { if (child.classes.has(cls)) found.push(child); walk(child); } };
+        walk(this);
+        return found;
+    }
 }
 
-/**
- * An element that keeps the text written into it (`recorded`), for the rows
- * that build themselves by hand: the status card, the setup code. Text
- * written into a child it made counts for it too; `empty()` clears only the
- * element it is called on, as in the DOM.
- */
-type TextEl = HTMLElement & { recorded: string };
-function textEl(parent?: { write: (text: string) => void }): TextEl {
-    let text = '';
-    const write = (more: string) => { text += more; parent?.write(more); };
-    const self = { write };
-    const make = (options?: { text?: string }) => {
-        const child = textEl(self);
-        if (options?.text) (child as unknown as { write: (t: string) => void }).write(options.text);
-        return child;
-    };
-    const target: Record<string | symbol, unknown> = {
-        write,
-        empty: () => { text = ''; },
-        appendText: (more: string) => write(more),
-        createEl: (_tag: string, options?: { text?: string }) => make(options),
-        createDiv: (options?: { text?: string }) => make(options),
-        createSpan: (options?: { text?: string }) => make(options),
-    };
-    Object.defineProperty(target, 'recorded', { get: () => text });
-    return new Proxy(target, {
-        get: (t, prop) => {
-            if (prop in t) return t[prop];
-            if (prop === 'then') return undefined;
-            return () => fakeEl();
-        },
-    }) as unknown as TextEl;
+/** Obsidian's setIcon replaces the element's first svg. */
+function setIcon(el: FakeNode, icon: string) {
+    // A test's stand-in element (a status bar of plain objects) has no tree.
+    if (!(el instanceof FakeNode)) return;
+    const first = el.firstChild;
+    if (first && first.tag === 'svg') el.removeChild(first);
+    const svg = new FakeNode('svg');
+    svg.attrs.icon = icon;
+    el.insertBefore(svg, el.firstChild);
 }
 
 class FakeButton {
+    buttonEl: FakeNode;
     text = '';
     disabled = false;
     cta = false;
     destructive = false;
     click: (() => unknown) | null = null;
-    setButtonText(text: string) { this.text = text; return this; }
+    constructor(parent?: FakeNode) { this.buttonEl = parent ? parent.createEl('button') : new FakeNode('button'); }
+    setButtonText(text: string) { this.text = text; this.buttonEl.setText(text); return this; }
     setCta() { this.cta = true; return this; }
     setDestructive() { this.destructive = true; return this; }
     setDisabled(disabled: boolean) { this.disabled = disabled; return this; }
+    setTooltip() { return this; }
     onClick(fn: () => unknown) { this.click = fn; return this; }
 }
 
 class FakeText {
-    inputEl = { type: 'text' };
+    inputEl: FakeNode;
     value = '';
+    placeholder = '';
     change: ((value: string) => unknown) | null = null;
-    setPlaceholder() { return this; }
+    constructor(parent?: FakeNode) { this.inputEl = parent ? parent.createEl('input') : new FakeNode('input'); }
+    setPlaceholder(placeholder: string) { this.placeholder = placeholder; return this; }
     setValue(value: string) { this.value = value; return this; }
+    getValue() { return this.value; }
     onChange(fn: (value: string) => unknown) { this.change = fn; return this; }
+    /** Type into the field: what Obsidian's onChange receives. */
+    async type(value: string) { this.value = value; await this.change?.(value); }
 }
 
 /** The icon buttons in the status card's top line. */
 class ExtraButtonComponent {
-    static rendered: ExtraButtonComponent[] = [];
+    extraSettingsEl: FakeNode;
     icon = '';
     tooltip = '';
     click: (() => unknown) | null = null;
-    constructor() { ExtraButtonComponent.rendered.push(this); }
-    setIcon(icon: string) { this.icon = icon; return this; }
-    setTooltip(tooltip: string) { this.tooltip = tooltip; return this; }
+    constructor(parent: FakeNode) { this.extraSettingsEl = parent.createDiv({ cls: 'clickable-icon extra-setting-button' }); }
+    setIcon(icon: string) { this.icon = icon; setIcon(this.extraSettingsEl, icon); return this; }
+    setTooltip(tooltip: string) { this.tooltip = tooltip; this.extraSettingsEl.attrs.tooltip = tooltip; return this; }
     onClick(fn: () => unknown) { this.click = fn; return this; }
 }
 
@@ -109,12 +153,16 @@ class ConfirmationModal {
     open() { this.opened = true; }
 }
 
-// Records every Setting a test renders (Setting.rendered) and runs the
-// component callbacks, so a test can find a control by its name and press it.
+/** Obsidian's Setting (app.js `rT`), the members the plugin uses. */
 class Setting {
+    /** The rows on screen after the last render, in order. */
     static rendered: Setting[] = [];
-    name = '';
-    desc = '';
+    settingEl: FakeNode;
+    infoEl: FakeNode;
+    nameEl: FakeNode;
+    descEl: FakeNode;
+    controlEl: FakeNode;
+    components: unknown[] = [];
     /** The heading of the group or list the framework rendered it in. */
     group: string | undefined = undefined;
     /** The sub-page it sits on (`type: 'page'`), when it is on one. */
@@ -125,39 +173,48 @@ class Setting {
     /** The definition's name: what Obsidian's settings search finds it by. */
     searchName = '';
     searchable = true;
-    classes: string[] = [];
-    buttons: FakeButton[] = [];
-    texts: FakeText[] = [];
     action: ((el: HTMLElement, index: number) => void) | null = null;
     control: unknown = null;
-    settingEl = textEl();
-    infoEl = fakeEl();
-    nameEl = fakeEl();
-    descEl = textEl();
-    controlEl = fakeEl();
-    constructor() { Setting.rendered.push(this); }
-    setName(name: string) { this.name = name; return this; }
-    setDesc(desc: unknown) { this.desc = typeof desc === 'string' ? desc : ''; return this; }
-    setClass(cls: string) { this.classes.push(cls); return this; }
+    /** How many times `render` ran on this row. */
+    renders = 0;
+    constructor(container: FakeNode) {
+        this.settingEl = container.createDiv({ cls: 'setting-item' });
+        this.infoEl = this.settingEl.createDiv('setting-item-info');
+        this.nameEl = this.infoEl.createDiv('setting-item-name');
+        this.descEl = this.infoEl.createDiv('setting-item-description');
+        this.controlEl = this.settingEl.createDiv('setting-item-control');
+    }
+    /** The row's title as drawn. */
+    get name(): string { return this.nameEl.textContent; }
+    get desc(): string { return this.descEl.textContent; }
+    get classes(): string[] { return [...this.settingEl.classes]; }
+    get buttons(): FakeButton[] { return this.components.filter((c): c is FakeButton => c instanceof FakeButton); }
+    get texts(): FakeText[] { return this.components.filter((c): c is FakeText => c instanceof FakeText); }
+    setName(name: string) { this.nameEl.setText(name); return this; }
+    setDesc(desc: unknown) { this.descEl.setText(typeof desc === 'string' ? desc : ''); return this; }
+    setClass(cls: string) { this.settingEl.addClass(...cls.split(' ').filter(Boolean)); return this; }
     setHeading() { return this; }
     addText(cb?: (t: FakeText) => void) {
-        const text = new FakeText();
-        this.texts.push(text);
+        const text = new FakeText(this.controlEl);
+        this.components.push(text);
         cb?.(text);
         return this;
     }
-    addToggle(cb?: (t: FakeText) => void) { cb?.(new FakeText()); return this; }
+    addToggle(cb?: (t: FakeText) => void) { const t = new FakeText(this.controlEl); this.components.push(t); cb?.(t); return this; }
     addButton(cb?: (b: FakeButton) => void) {
-        const button = new FakeButton();
-        this.buttons.push(button);
+        const button = new FakeButton(this.controlEl);
+        this.components.push(button);
         cb?.(button);
         return this;
     }
     addDropdown() { return this; }
+    /** app.js: empties the control area only; the rest of the row stays. */
+    clear() { this.controlEl.empty(); this.components = []; this.settingEl.removeClass('is-invalid'); return this; }
 }
 
 interface FakeDefinition {
     type?: 'group' | 'list' | 'page';
+    id?: string;
     heading?: string;
     items?: FakeDefinition[];
     name: string;
@@ -167,73 +224,158 @@ interface FakeDefinition {
     searchable?: boolean | (() => boolean);
     render?: (setting: Setting, group: unknown) => unknown;
     action?: (el: HTMLElement, index: number) => void;
-    control?: unknown;
+    control?: { key: string; type: string };
 }
+
+interface Row { key: string; setting: Setting; cleanup?: () => void }
 
 const evaluate = (value: boolean | (() => boolean) | undefined): boolean =>
     typeof value === 'function' ? value() : value !== false;
 
-/** What each `render` returned, run before the rows are drawn again. */
-const cleanups: (() => void)[] = [];
+/** app.js P4: run a row's cleanup once. */
+function runCleanup(row: Row) {
+    const cleanup = row.cleanup;
+    row.cleanup = undefined;
+    cleanup?.();
+}
 
-/**
- * Renders definitions the way Obsidian's settings framework does, as far as
- * the tests need: one Setting per definition that is visible, named and
- * described from the definition, then `render` handed that Setting. Groups
- * and lists render their items under their heading.
- *
- * A page (`type: 'page'`) draws its row, then its items as if it were open,
- * each marked with the page's name: Obsidian's settings search reaches into a
- * declarative page, so a test of what search finds has to as well.
- */
-function renderDefinitions(items: FakeDefinition[], heading: string | undefined, page?: string): void {
-    for (const item of items) {
-        if (!evaluate(item.visible)) continue;
+/** app.js C4: a row's key inside its group. */
+function rowKey(def: FakeDefinition, index: number): string {
+    if (def.type === 'page') return `page:${def.name}`;
+    if (def.id) return `id:${def.id}`;
+    if (def.control) return `ctrl:${def.control.key}`;
+    return def.name ? `name:${def.name}` : `item#${index}`;
+}
+
+/** Loose top-level items share an anonymous group, as Obsidian draws them. */
+function groupsOf(items: FakeDefinition[]): { key: string; heading?: string; items: FakeDefinition[] }[] {
+    const groups: { key: string; heading?: string; items: FakeDefinition[] }[] = [];
+    let loose: FakeDefinition[] | null = null;
+    items.forEach((item) => {
         if (item.type === 'group' || item.type === 'list') {
-            renderDefinitions(item.items ?? [], item.heading, page);
-            continue;
+            loose = null;
+            if (!evaluate(item.visible)) return;
+            const key = item.heading ? `${item.type}:${item.heading}` : `${item.type}#${groups.length}`;
+            groups.push({ key, heading: item.heading, items: item.items ?? [] });
+            return;
         }
-        const setting = new Setting();
-        setting.group = heading;
-        setting.page = page;
-        setting.searchable = evaluate(item.searchable);
-        setting.aliases = item.aliases ?? [];
-        setting.searchName = item.name;
-        setting.setName(item.name);
-        if (item.desc !== undefined) setting.setDesc(item.desc);
-        if (item.type === 'page') {
-            setting.opensPage = true;
-            renderDefinitions(item.items ?? [], undefined, item.name);
-            continue;
+        if (!loose) {
+            loose = [];
+            groups.push({ key: `group#${groups.length}`, items: loose });
         }
-        if (item.render) {
-            const cleanup = item.render(setting, fakeEl());
-            if (typeof cleanup === 'function') cleanups.push(cleanup as () => void);
-        }
-        if (item.action) setting.action = item.action;
-        if (item.control) setting.control = item.control;
-    }
+        loose.push(item);
+    });
+    return groups;
 }
 
 class PluginSettingTab {
+    /**
+     * The tab opened last: only it reports its rows in Setting.rendered, so a
+     * test's tab is not overwritten by an earlier test's late redraw.
+     */
+    static latest: PluginSettingTab | null = null;
     app: unknown;
     plugin: unknown;
-    containerEl = fakeEl();
+    containerEl = new FakeNode('div');
     settingItems: unknown[] = [];
+    /** The settings window shows this tab. */
+    active = false;
+    /** The sub-page that is open, if any. */
+    openPageName: string | null = null;
+    private rows: Row[] = [];
     constructor(app: unknown, plugin: unknown) {
         this.app = app;
         this.plugin = plugin;
     }
     getSettingDefinitions(): unknown[] { return []; }
-    /** Obsidian rebuilds the definitions and re-renders the open tab. */
+    /** Obsidian rebuilds the definitions, and redraws the tab only if it is open. */
     update() {
         this.settingItems = this.getSettingDefinitions();
-        cleanups.splice(0).forEach(cleanup => cleanup());
-        Setting.rendered.length = 0;
-        ExtraButtonComponent.rendered.length = 0;
-        renderDefinitions(this.settingItems as FakeDefinition[], undefined);
+        if (this.active) this.reconcile();
+    }
+    /** She opens the tab: fresh rows from the definitions built last. */
+    open() {
+        if (this.settingItems.length === 0) this.settingItems = this.getSettingDefinitions();
+        PluginSettingTab.latest = this;
+        this.teardown();
+        this.active = true;
+        this.reconcile();
+    }
+    /** She closes the settings: every cleanup runs. */
+    close() {
+        this.teardown();
+        this.active = false;
+    }
+    openPage(name: string) {
+        this.teardown();
+        this.openPageName = name;
+        this.reconcile();
+    }
+    closePage() {
+        this.teardown();
+        this.openPageName = null;
+        this.reconcile();
     }
     refreshDomState() { }
+    private teardown() {
+        for (const row of this.rows) { runCleanup(row); row.setting.settingEl.detach(); }
+        this.rows = [];
+        this.containerEl.empty();
+        if (PluginSettingTab.latest === this) Setting.rendered = [];
+    }
+    private reconcile() {
+        let items = this.settingItems as FakeDefinition[];
+        if (this.openPageName !== null) {
+            const page = items.find(item => item.type === 'page' && item.name === this.openPageName);
+            items = page?.items ?? [];
+        }
+        const next: Row[] = [];
+        for (const group of groupsOf(items)) {
+            group.items.forEach((def, index) => {
+                if (!evaluate(def.visible)) return;
+                const key = `${group.key}|${rowKey(def, index)}`;
+                let row = this.rows.find(r => r.key === key);
+                if (row) {
+                    runCleanup(row);
+                    row.setting.clear();
+                } else {
+                    row = { key, setting: new Setting(this.containerEl) };
+                }
+                this.draw(row, def, group.heading);
+                next.push(row);
+            });
+        }
+        for (const row of this.rows) {
+            if (!next.includes(row)) { runCleanup(row); row.setting.settingEl.detach(); }
+        }
+        this.rows = next;
+        if (PluginSettingTab.latest === this) Setting.rendered = next.map(row => row.setting);
+    }
+    /** app.js O4: name, description, then render on the same Setting. */
+    private draw(row: Row, def: FakeDefinition, heading: string | undefined) {
+        const setting = row.setting;
+        setting.group = heading;
+        setting.page = this.openPageName ?? undefined;
+        setting.searchName = def.name;
+        setting.aliases = def.aliases ?? [];
+        setting.searchable = evaluate(def.searchable);
+        setting.setName(def.name);
+        setting.setDesc(def.desc ?? '');
+        if (def.type === 'page') {
+            setting.opensPage = true;
+            return;
+        }
+        if (def.render) {
+            setting.renders++;
+            const cleanup = def.render(setting, {});
+            if (typeof cleanup === 'function') row.cleanup = cleanup as () => void;
+        }
+        if (def.action) setting.action = def.action;
+        if (def.control) {
+            setting.control = def.control;
+            setting.controlEl.createEl('input');
+        }
+    }
 }
 
 class TAbstractFile {
@@ -271,6 +413,8 @@ module.exports = {
     TAbstractFile,
     normalizePath,
     requestUrl: jest.fn(),
-    setIcon: jest.fn(),
+    setIcon: jest.fn((el: FakeNode, icon: string) => setIcon(el, icon)),
     setTooltip: jest.fn(),
+    /** Not Obsidian's: a detached element for tests that need one. */
+    __Node: FakeNode,
 };

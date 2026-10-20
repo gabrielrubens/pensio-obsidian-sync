@@ -74,9 +74,13 @@ describe('Mirror Delete Safety', () => {
             debugMode: false,
         };
 
-        // A vault with no local files until a test adds one
-        localFiles = [];
+        // ⭐ One note present by default. Since 0.7.1 mirror delete does not
+        // run when a sync sees no notes at all (review F10), so a test that
+        // started from an empty vault would pass for that reason alone and stop
+        // testing which entries it keeps.
+        localFiles = [{ path: 'Journal/kept.md' }];
         mockApp = { vault: fakeVault(() => localFiles) };
+        mockApp.vault.read.mockResolvedValue('hello');
 
         engine = new SyncEngine(mockApp, settings, mockApiClient);
     });
@@ -173,6 +177,18 @@ describe('Mirror Delete Safety', () => {
         await engine.syncAll(false);
 
         expect(mockApiClient.deletePerson).not.toHaveBeenCalled();
+    });
+
+    it('should NOT delete anything when the sync sees no notes at all', async () => {
+        // An empty view of the vault is far likelier a misconfiguration than a
+        // vault emptied while Obsidian was closed (review F10).
+        localFiles = [];
+        mockApiClient.listEntries.mockResolvedValue([makeEntry({ id: 'e1', file_path: 'Journal/gone.md' })]);
+
+        await engine.syncAll(false);
+
+        expect(mockApiClient.listEntries).not.toHaveBeenCalled();
+        expect(mockApiClient.deleteEntry).not.toHaveBeenCalled();
     });
 
     // --- Mirror delete disabled ---

@@ -7,6 +7,17 @@ workflow publishes the section whose heading names the version, and refuses to
 publish a release without one. Releases before 0.5.0 are on
 [GitHub](https://github.com/gabrielrubens/pensio-obsidian-sync/releases).
 
+## 0.7.1
+
+- **The card at the top of the settings draws once.** In 0.7.0 every redraw added another line and another icon to it.
+- **Far fewer requests to Pensio, so a busy day no longer locks a vault out.** Mirror delete now runs at most once an hour by itself (and at once when you press Sync now), and a sync that hits a problem stops there instead of trying every remaining part.
+- **Clearing a folder field no longer deletes that folder's entries.** With Mirror delete on, emptying or retyping a journal folder for a few seconds deleted its entries on Pensio. Mirror delete now waits for a sync that worked with the new folders, skips a folder that has gone missing, and sends a note again if it comes back after its entry was removed.
+- **Pasted tokens apply only as a whole pair.** Under Advanced, the token fields used to apply every keystroke. Now they change nothing until both hold a complete token, and they keep your sync history when the tokens are for the same account. Emptying both stops syncing without forgetting what was synced, and the next connect ends the old connection on Pensio.
+- **When Pensio is limiting requests, the plugin says so.** It says when to try again if Pensio tells it, and promises a retry only when one will happen. Other errors show what Pensio actually said.
+- **"Couldn't check the connection" offers Connect to Pensio** next to Try again. The plugin checks the account again by itself when Pensio next answers, and opening the settings always shows the connection as it is now.
+- **A connection in progress is harder to lose.** An approval still completes if Obsidian restarts or you press Connect twice. Opening the browser's link a second time says the vault is already connected. A setup code you are typing survives a redraw.
+- **Disconnect and Sync now say what happened**, including when nothing was connected.
+
 ## 0.7.0
 
 - **See at a glance whether this vault is syncing.** The top of the plugin's settings is one card now. Green: connected, with your account, how many notes have synced and when. Orange: the session expired or the last sync failed, and why. Outlined: nothing is connected yet. The plugin's version is on it too.

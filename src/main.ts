@@ -1,9 +1,11 @@
 import { Plugin, TFile } from 'obsidian';
 import { ApiClient } from './api/client';
+import { AccountCheck } from './accountCheck';
 import { AccountGuard } from './auth/accountGuard';
+import { tokenUserId } from './auth/identity';
 import { CALLBACK_ACTION, OneClickConnect } from './auth/oneClick';
 import { debugLog, setDebugMode } from './logger';
-import { FailureContext, NOTICE_MS, notify, notifyFailure } from './notices';
+import { clearNotice, explainFailure, FailureContext, NOTICE_MS, notify, notifyFailure } from './notices';
 import { PensioSettingTab } from './settings';
 import { SyncEngine } from './sync/engine';
 import { quotaDayKey, quotaNoticeMessage, quotaSummaryLine, shouldNotifyQuota } from './sync/quotaNotice';
@@ -35,13 +37,19 @@ export default class PensioPlugin extends Plugin {
     statusBarItem: HTMLElement;
     /** Whether this vault is syncing: the status bar, the notices, the status card. */
     syncStatus: SyncStatus;
+    /** The one check of which account the tokens belong to (src/accountCheck.ts). */
+    accountCheck: AccountCheck;
     private settingTab: PensioSettingTab | null = null;
     private _syncState: SyncStateData | null = null;
     /** In-memory token values (persisted in SecretStorage, never in data.json) */
     private _accessToken: string = '';
     private _refreshToken: string = '';
-    /** Tracks the token values that were last used, to detect manual changes */
-    private _previousTokenFingerprint: string = '';
+    /**
+     * The refresh token of a connection whose token fields were emptied by
+     * hand: sent as previous_refresh on the next connect, so that connection
+     * ends on Pensio instead of staying listed in Connected apps.
+     */
+    private replacedRefresh: string = '';
 
     private static readonly SECRET_ACCESS_TOKEN = 'pensio-access-token';
     private static readonly SECRET_REFRESH_TOKEN = 'pensio-refresh-token';
@@ -62,6 +70,11 @@ export default class PensioPlugin extends Plugin {
         // What the sync is doing, for the status bar, the notices and the
         // status card. Built first: the callbacks below report to it.
         this.syncStatus = this.createSyncStatus();
+        this.accountCheck = new AccountCheck(
+            (onError) => this.verifyAccountBeforeSync({ onError }),
+            () => this.failureContext(),
+            () => this.syncStatus.changed(),
+        );
 
         // Initialize API client
         this.apiClient = new ApiClient(this.settings);
@@ -113,10 +126,16 @@ export default class PensioPlugin extends Plugin {
         // An automatic sync reports how it ended; one she asked for is
         // reported by syncNow.
         this.syncEngine.onSyncFailed = (error) => this.syncStatus.failed(error, { asked: false });
-        this.syncEngine.onSyncSucceeded = () => this.syncStatus.recovered();
+        this.syncEngine.onSyncSucceeded = (contacted) => this.onSyncReachedPensio(contacted);
+        // A problem on screen, or an account nobody has checked, makes a sync
+        // with nothing to send ask Pensio anyway (review F26).
+        this.syncEngine.needsContact = () =>
+            this.syncStatus.getProblem() !== null || this.accountGuard.getAccount() === null;
 
-        // Snapshot current tokens for change detection
-        this._previousTokenFingerprint = this.tokenFingerprint();
+        // The network came back: if the account was never checked, check it.
+        this.registerDomEvent(window, 'online', () => {
+            if (this._accessToken && !this.accountGuard.getAccount()) void this.accountCheck.run();
+        });
 
         // Status bar: what the sync is doing. Pressing it says why, in a
         // notice that stays until dismissed.
@@ -132,8 +151,18 @@ export default class PensioPlugin extends Plugin {
         // One-click connect: the browser hands the code back at
         // obsidian://pensio-connect (src/auth/oneClick.ts). The exchange sends
         // the refresh token this vault holds, so the connection it replaces ends.
-        this.oneClick = new OneClickConnect((code, verifier, deviceId) =>
-            this.apiClient.connectWithCode(code, verifier, deviceId, this._refreshToken));
+        this.oneClick = new OneClickConnect(
+            (code, verifier, deviceId) =>
+                this.apiClient.connectWithCode(code, verifier, deviceId, this.previousRefresh()),
+            {
+                // This device only, never synced: a reload, an update or a
+                // second press must not orphan an approval (review F24).
+                store: {
+                    load: () => this.app.loadLocalStorage('pensio-one-click') as unknown,
+                    save: (value: unknown) => this.app.saveLocalStorage('pensio-one-click', value),
+                },
+            },
+        );
         this.registerObsidianProtocolHandler(CALLBACK_ACTION, (params) => {
             void this.finishOneClickConnect(params);
         });
@@ -142,10 +171,29 @@ export default class PensioPlugin extends Plugin {
         this.registerCommands();
 
         // Start file watcher + initial sync if configured
-        if (this.settings.autoSync && this.settings.apiUrl && this._accessToken) {
+        this.restartAutoSync();
+    }
+
+    /**
+     * Run the automatic sync when it should run. ⛔ An empty Server URL means
+     * Pensio itself (client.ts falls back to it), not "off": 0.7.0 silently
+     * stopped auto-sync when the field was cleared, while every notice still
+     * promised a retry every 5 minutes (review F34).
+     */
+    private restartAutoSync(): void {
+        this.syncEngine.stopWatching();
+        if (this.settings.autoSync && this._accessToken && this._refreshToken) {
             this.syncEngine.startWatching();
             this.syncEngine.startAutoSync();
         }
+    }
+
+    /** A sync ended with nothing failing; `contacted`: Pensio answered it. */
+    private onSyncReachedPensio(contacted: boolean): void {
+        if (!contacted) return;
+        this.syncStatus.recovered();
+        // Pensio answers again: an account nobody could check gets checked now.
+        if (!this.accountGuard.getAccount()) void this.accountCheck.run();
     }
 
     onunload() {
@@ -226,21 +274,11 @@ export default class PensioPlugin extends Plugin {
         // Update API client with new settings
         this.apiClient.updateSettings(this.settings);
 
-        // Detect token change — clear sync state to prevent cross-account data
-        const currentFingerprint = this.tokenFingerprint();
-        if (this._previousTokenFingerprint &&
-            currentFingerprint &&
-            currentFingerprint !== this._previousTokenFingerprint) {
-            await this.handleTokenChange();
-        }
-        this._previousTokenFingerprint = currentFingerprint;
-
-        // Restart watcher + auto-sync if enabled
-        this.syncEngine.stopWatching();
-        if (this.settings.autoSync && this.settings.apiUrl && this._accessToken) {
-            this.syncEngine.startWatching();
-            this.syncEngine.startAutoSync();
-        }
+        // ⛔ No token check here: tokens are not settings (they live in
+        // SecretStorage), and every change of them goes through setTokens.
+        // Restarting cancels the sync the last save scheduled, so a burst of
+        // saves (typing a folder path) syncs once, 5 s after the last.
+        this.restartAutoSync();
     }
 
     registerCommands() {
@@ -250,6 +288,7 @@ export default class PensioPlugin extends Plugin {
             name: 'Sync now',
             callback: () => this.syncNow()
         });
+
 
         // Force sync all files (ignore change detection)
         this.addCommand({
@@ -299,7 +338,7 @@ export default class PensioPlugin extends Plugin {
                         (quotaLine ? `\n${quotaLine}` : '')
                     );
                 } catch (error) {
-                    notifyFailure('Checking the sync status', error, this.failureContext());
+                    notifyFailure('Checking the sync status', error, this.failureContext(), 'connection');
                     console.error('Status error:', error);
                 }
             }
@@ -321,6 +360,15 @@ export default class PensioPlugin extends Plugin {
      * dismisses it (SyncStatus).
      */
     async syncNow(options: { force?: boolean; file?: TFile } = {}): Promise<void> {
+        // ⛔ Before 0.7.1 a sync with nothing connected did nothing visible.
+        if (!this._accessToken || !this._refreshToken) {
+            notify('This vault isn’t connected. Open the plugin’s settings and press Connect to Pensio.', NOTICE_MS.failure);
+            return;
+        }
+        if (this.apiClient.isAuthInvalidated()) {
+            notify('The connection to Pensio has stopped. Open the plugin’s settings and press Connect to Pensio.', NOTICE_MS.failure);
+            return;
+        }
         this.syncStatus.syncing();
         try {
             const verified = await this.verifyAccountBeforeSync({
@@ -331,7 +379,7 @@ export default class PensioPlugin extends Plugin {
                 return;
             }
             if (options.file) this.syncEngine.markDirty(options.file.path);
-            const result = await this.syncEngine.syncAll(options.force ?? false);
+            const result = await this.syncEngine.syncAll(options.force ?? false, { asked: true });
             this.syncStatus.succeeded(`${result.synced} synced`);
             if (options.file) {
                 notify(result.synced > 0 ? `${options.file.name} synced.` : `${options.file.name} was already up to date.`);
@@ -344,9 +392,21 @@ export default class PensioPlugin extends Plugin {
         }
     }
 
-    /** What a failure notice needs to word itself. */
+    /**
+     * What a failure notice needs to word itself, for anything she pressed
+     * that nothing will repeat: a connect, a setup code, Test connection, the
+     * card's check. ⛔ So it promises no automatic retry.
+     */
     failureContext(): FailureContext {
-        return { apiUrl: this.settings.apiUrl, autoSync: this.settings.autoSync };
+        return { apiUrl: this.settings.apiUrl, retries: false };
+    }
+
+    /** The same, for a sync: the automatic sync retries it, when it runs. */
+    syncFailureContext(): FailureContext {
+        return {
+            apiUrl: this.settings.apiUrl,
+            retries: this.settings.autoSync && (this.syncEngine?.isAutoSyncing() ?? false),
+        };
     }
 
     private createSyncStatus(): SyncStatus {
@@ -354,7 +414,7 @@ export default class PensioPlugin extends Plugin {
             statusBar: () => this.statusBarItem ?? null,
             isAuthInvalidated: () => this.apiClient?.isAuthInvalidated() ?? false,
             trackedCount: () => this.syncEngine?.getTrackedFileCount() ?? 0,
-            failureContext: () => this.failureContext(),
+            failureContext: () => this.syncFailureContext(),
         });
     }
 
@@ -368,13 +428,21 @@ export default class PensioPlugin extends Plugin {
      * connection is then stoppable from Connected apps on the web.
      */
     async logout(): Promise<void> {
-        let stopped = false;
-        if (this._accessToken && this._refreshToken && !this.apiClient.isAuthInvalidated()) {
-            try {
-                await this.apiClient.disconnect();
-                stopped = true;
-            } catch (error) {
-                debugLog('Disconnect on the server failed; forgetting locally', error);
+        // ⭐ The notice says what happened (review F35): 0.7.0 said Pensio
+        // "could not be reached" when it was reached and refused, and when
+        // nothing was ever asked.
+        let outcome: 'stopped' | 'already-ended' | 'nothing' | { failed: unknown } = 'nothing';
+        if (this._accessToken && this._refreshToken) {
+            if (this.apiClient.isAuthInvalidated()) {
+                outcome = 'already-ended';
+            } else {
+                try {
+                    await this.apiClient.disconnect();
+                    outcome = 'stopped';
+                } catch (error) {
+                    debugLog('Disconnect on the server failed; forgetting locally', error);
+                    outcome = { failed: error };
+                }
             }
         }
         this._accessToken = '';
@@ -386,17 +454,51 @@ export default class PensioPlugin extends Plugin {
         this.syncEngine.clearState();
         this.accountGuard.clearAccount();
         this._syncState = null;
+        this.replacedRefresh = '';
+        this.accountCheck?.reset();
         await this.saveSettings();
         this.syncStatus?.reset();
-        if (stopped) {
+        clearNotice('connection');
+        if (outcome === 'stopped') {
             notify('Disconnected. This vault no longer syncs.');
+        } else if (outcome === 'already-ended') {
+            notify('Disconnected. This connection had already ended on Pensio.');
+        } else if (outcome === 'nothing') {
+            notify('Disconnected. There was no connection to stop.');
         } else {
+            const { reason } = explainFailure(outcome.failed, this.failureContext());
             notify(
-                'Disconnected here, but Pensio could not be reached to stop the connection there. ' +
+                `Disconnected here, but Pensio didn’t stop the connection there. ${reason} ` +
                 'Stop it on the web too: Settings \u2192 Connected apps.',
                 NOTICE_MS.failure,
             );
         }
+    }
+
+    /**
+     * Both token fields were emptied by hand: stop using these tokens here,
+     * without ending anything and without forgetting what was synced. The next
+     * connect ends the old connection on Pensio (previous_refresh), and keeps
+     * the sync history if it is the same account (setTokens). ⛔ 0.7.0 wiped
+     * the sync history on the first emptied field, so the reconnect that
+     * followed re-uploaded every note (review F5).
+     */
+    async forgetTokens(): Promise<void> {
+        if (this._refreshToken) this.replacedRefresh = this._refreshToken;
+        this._accessToken = '';
+        this._refreshToken = '';
+        await this.saveTokens();
+        await this.apiClient.logout();
+        this.accountGuard.clearAccount();
+        this.accountCheck?.reset();
+        this.restartAutoSync();
+        this.syncStatus?.reset();
+        this.settingTab?.update();
+    }
+
+    /** The refresh token a new connection should end: the one held, or one just emptied. */
+    previousRefresh(): string {
+        return this._refreshToken || this.replacedRefresh;
     }
 
     // ========================================================================
@@ -415,7 +517,7 @@ export default class PensioPlugin extends Plugin {
             this.settings.apiUrl, deviceId, this.deviceName(), this.app.vault.getName()
         );
         window.open(url);
-        notify('Approve this vault in your browser, then come back here.', 10000);
+        notify('Approve this vault in your browser, then come back here.', 10000, 'connection');
     }
 
     /** obsidian://pensio-connect landed. */
@@ -427,17 +529,24 @@ export default class PensioPlugin extends Plugin {
                     await this.adoptConnection(outcome.result);
                     return;
                 case 'cancelled':
-                    notify('Connecting was cancelled.');
+                    notify('Connecting was cancelled in the browser. Nothing changed here.', NOTICE_MS.info, 'connection');
                     return;
                 case 'expired':
-                    notify('That request expired. Press Connect to Pensio in the settings again.', NOTICE_MS.failure);
+                    notify('That request expired. Press Connect to Pensio in the settings again.', NOTICE_MS.failure, 'connection');
+                    return;
+                case 'already-used':
+                    notify('That approval was already used. This vault is connected.', NOTICE_MS.info, 'connection');
                     return;
                 case 'not-ours':
-                    notify('That link was not started from this vault. Press Connect to Pensio in its settings.', NOTICE_MS.failure);
+                    notify(
+                        'Pensio couldn’t match this approval to a Connect request in this vault. ' +
+                        'Press Connect to Pensio again, and approve in the newest browser tab.',
+                        NOTICE_MS.failure, 'connection',
+                    );
                     return;
             }
         } catch (error) {
-            notifyFailure('Connecting', error, this.failureContext());
+            notifyFailure('Connecting', error, this.failureContext(), 'connection');
             console.error('One-click connect failed:', error);
         }
     }
@@ -446,20 +555,31 @@ export default class PensioPlugin extends Plugin {
      * Take a fresh token family from either door (a setup code or one click),
      * verify the account, and say so.
      *
-     * ⭐ Sync state is kept: reconnecting after an expired or stopped
-     * connection must not re-upload the vault. A different account is still
-     * caught, by the account guard, which clears the sync state itself.
+     * ⭐ Sync state is kept when it is the same account: reconnecting after an
+     * expired or stopped connection must not re-upload the vault. setTokens
+     * reads the account from the new token and clears the state on a switch.
+     *
+     * ⭐ One account check (accountCheck), shared with the status card: 0.7.0
+     * ran two in parallel on every connect (review F13).
      */
     async adoptConnection(result: { access: string; refresh: string }): Promise<void> {
-        await this.setTokens(result.access, result.refresh, { keepSyncState: true });
+        await this.setTokens(result.access, result.refresh);
+        this.replacedRefresh = '';
 
-        // A check that cannot run now (offline) is not a failed connection:
-        // the first sync checks again.
-        const verified = await this.verifyAccountBeforeSync({ onError: () => undefined });
+        const verified = await this.accountCheck.run();
         const account = this.accountGuard.getAccount();
-        notify(verified && account
-            ? `Connected as ${account.email}.`
-            : 'Connected. The account is checked on the first sync.');
+        if (verified && account) {
+            notify(`Connected as ${account.email}.`, NOTICE_MS.info, 'connection');
+        } else {
+            // ⛔ Not "the account is checked on the first sync": 0.7.0 said
+            // that, and no automatic sync ever ran the check (review F8).
+            const reason = this.accountCheck.problem?.reason ?? '';
+            notify(
+                `Connected, but Pensio couldn’t confirm the account yet. ${reason} ` +
+                'The plugin checks again when Pensio next answers.',
+                NOTICE_MS.failure, 'connection',
+            );
+        }
         this.settingTab?.update();
     }
 
@@ -552,28 +672,12 @@ export default class PensioPlugin extends Plugin {
         }
     }
 
-    /**
-     * Handle token change detected in saveSettings().
-     * Clears sync state preemptively — the account guard will
-     * re-verify on next sync.
-     */
-    private async handleTokenChange(): Promise<void> {
-        debugLog('Token change detected — clearing sync state');
+    /** Forget what was synced: the next sync checks every note again. */
+    private clearSyncHistory(): void {
+        debugLog('Clearing sync state');
         this.syncEngine.clearState();
         this.accountGuard.clearAccount();
         this._syncState = null;
-    }
-
-    /**
-     * Compute a fingerprint of the current tokens for change detection.
-     * Uses first 16 chars of each token so we detect changes without
-     * storing full tokens again.
-     */
-    private tokenFingerprint(): string {
-        const access = this._accessToken || '';
-        const refresh = this._refreshToken || '';
-        if (!access && !refresh) return '';
-        return `${access.substring(0, 16)}:${refresh.substring(0, 16)}`;
     }
 
     // ========================================================================
@@ -630,42 +734,37 @@ export default class PensioPlugin extends Plugin {
     getRefreshToken(): string { return this._refreshToken; }
 
     /**
-     * Set tokens from external source (e.g. settings tab paste).
-     * Persists to SecretStorage and initializes the API client.
+     * Take a new pair of tokens: from a connect, a setup code, or pasted by
+     * hand under Advanced. Persists them and initializes the API client.
+     *
+     * ⭐ The sync history stays when the new tokens are for the account it
+     * belongs to, read from the token itself (src/auth/identity.ts): a
+     * reconnect must not re-upload the vault. Tokens for another account, or
+     * a state that names no owner, start it again; ⛔ that is decided here,
+     * before any sync can upload to the wrong account. The cached account is
+     * always forgotten: new tokens are unverified until the account check runs.
      */
-    async setTokens(
-        accessToken: string,
-        refreshToken: string,
-        options: { keepSyncState?: boolean } = {}
-    ): Promise<void> {
+    async setTokens(accessToken: string, refreshToken: string): Promise<void> {
         this._accessToken = accessToken;
         this._refreshToken = refreshToken;
         await this.saveTokens();
         if (accessToken && refreshToken) {
             await this.apiClient.initializeTokens(accessToken, refreshToken);
         }
-        // Detect change for account guard
-        const currentFingerprint = this.tokenFingerprint();
-        if (this._previousTokenFingerprint &&
-            currentFingerprint &&
-            currentFingerprint !== this._previousTokenFingerprint) {
-            // A pairing keeps the sync state when it names whose it is: the
-            // account guard compares that id on the next verify and clears it
-            // on a switch. A hand-pasted token, or a state with no owner, is
-            // cleared as before.
-            if (options.keepSyncState && this._syncState?.userId) {
-                this.accountGuard.clearAccount();
-            } else {
-                await this.handleTokenChange();
+        const owner = this._syncState?.userId ?? null;
+        const userId = tokenUserId(accessToken);
+        if (owner !== null && userId !== owner) {
+            if (userId !== null) {
+                notify('These tokens are for a different Pensio account, so every note syncs again to it.', 15000);
             }
+            this.clearSyncHistory();
+        } else if (owner === null && this._syncState) {
+            // A history from before sync state named its owner: start it again.
+            this.clearSyncHistory();
         }
-        this._previousTokenFingerprint = currentFingerprint;
-        // Restart sync if appropriate
-        this.syncEngine.stopWatching();
-        if (this.settings.autoSync && this.settings.apiUrl && this._accessToken) {
-            this.syncEngine.startWatching();
-            this.syncEngine.startAutoSync();
-        }
+        this.accountGuard.clearAccount();
+        this.accountCheck?.reset();
+        this.restartAutoSync();
         // Re-pairing resets a dead session — clear the reconnect hint.
         this.syncStatus?.reset();
     }

@@ -17,6 +17,9 @@
  * - syncAll throwing a plain Error instead of SyncFailure → "end to end" RED;
  * - emit() walking the live listener Set → "hears the next change" RED.
  *
+ * Re-checked on 0.7.1 (2026-10-20): the busy kind drawn as "sync failed" →
+ * "a rate limit reads busy" RED.
+ *
  * ⚠️ That last one was found by sabotage, not review: making the status card
  * redraw the tab on every change ran Node out of memory, because the redrawn
  * card subscribed while the Set was being walked and was called in the same
@@ -53,7 +56,7 @@ function makeStatus(state = { invalid: false }) {
         statusBar: () => bar as unknown as HTMLElement,
         isAuthInvalidated: () => state.invalid,
         trackedCount: () => 412,
-        failureContext: () => ({ apiUrl: 'https://pensio.app', autoSync: true }),
+        failureContext: () => ({ apiUrl: 'https://pensio.app', retries: true }),
     });
     return { status, bar, state };
 }
@@ -76,6 +79,17 @@ describe('the sync status', () => {
         ]);
         expect(NoticeMock.mock.calls[0][1]).toBe(0);
         expect(bar.words).toEqual(['Pensio sync failed']);
+    });
+
+    it('a rate limit reads busy in the status bar, not failed', () => {
+        const { status, bar } = makeStatus();
+
+        status.failed(new HttpError('Rate limit exceeded', 429), { asked: false });
+
+        expect(bar.words).toEqual(['Pensio busy']);
+        expect(shown()[0]).toBe(
+            'Pensio: Sync failed. Pensio is limiting requests for now. Nothing is lost. The plugin tries again every 5 minutes.'
+        );
     });
 
     it('takes the notice away when a sync works again', () => {

@@ -6,8 +6,8 @@ export type ConnectionState = 'connected' | 'unverified' | 'reconnect' | 'discon
 /** The card's colour: working, needs her, not connected, or checking. */
 export type CardTone = 'ok' | 'warn' | 'off' | 'pending';
 
-/** The one button the card carries in this state. */
-export type CardAction = 'connect' | 'sync' | 'check' | null;
+/** A button the card carries. */
+export type CardAction = 'connect' | 'sync' | 'check';
 
 /** Everything the card says, read when it is drawn. */
 export interface CardFacts {
@@ -23,6 +23,8 @@ export interface CardFacts {
     checking: boolean;
     /** Checking the saved tokens failed, and why. */
     checkProblem: Explanation | null;
+    /** No check has run for these tokens yet. */
+    unchecked?: boolean;
     now: number;
 }
 
@@ -34,7 +36,13 @@ export interface CardView {
     detail: string;
     /** Follow the detail with "No account? Create one free". */
     signUp: boolean;
-    action: CardAction;
+    /** The buttons, the main one first. */
+    actions: CardAction[];
+}
+
+/** A passing problem: trying again may work, so Try again comes first. */
+function passing(problem: Explanation): boolean {
+    return problem.kind === 'offline' || problem.kind === 'busy' || problem.kind === 'server';
 }
 
 /** "just now", "3 min ago", "5 h ago", "2 days ago", or the date. */
@@ -63,29 +71,41 @@ export function timeAgo(then: number, now: number): string {
 export function cardView(f: CardFacts): CardView {
     switch (f.state) {
         case 'disconnected':
-            return { tone: 'off', icon: 'cloud-off', title: 'Not connected', detail: '', signUp: true, action: 'connect' };
+            return { tone: 'off', icon: 'cloud-off', title: 'Not connected', detail: '', signUp: true, actions: ['connect'] };
         case 'reconnect':
             return {
                 tone: 'warn', icon: 'alert-triangle', title: 'Session expired',
-                detail: 'Your notes and sync history are safe.', signUp: false, action: 'connect',
+                detail: 'Your notes and sync history are safe.', signUp: false, actions: ['connect'],
             };
         case 'unverified':
             if (f.checkProblem && !f.checking) {
+                // ⛔ 0.7.0 offered only Try again here, so the obvious way out,
+                // connecting again, meant clearing the token fields by hand
+                // (review F4). Connect keeps the sync history.
                 return {
                     tone: 'warn', icon: 'alert-triangle', title: 'Couldn’t check the connection',
-                    detail: f.checkProblem.reason, signUp: false, action: 'check',
+                    detail: [f.checkProblem.reason, f.checkProblem.next].filter(Boolean).join(' '),
+                    signUp: false,
+                    actions: passing(f.checkProblem) ? ['check', 'connect'] : ['connect', 'check'],
+                };
+            }
+            if (!f.checking && f.unchecked === false) {
+                // Checked, and still not known: never a spinner that never ends.
+                return {
+                    tone: 'pending', icon: 'help-circle', title: 'Not checked yet',
+                    detail: 'Tokens are saved.', signUp: false, actions: ['check', 'connect'],
                 };
             }
             return {
                 tone: 'pending', icon: 'refresh-cw', title: 'Checking connection…',
-                detail: 'Tokens are saved. This takes a second.', signUp: false, action: null,
+                detail: 'Tokens are saved. This takes a second.', signUp: false, actions: [],
             };
         case 'connected': {
             if (f.problem) {
                 return {
                     tone: 'warn', icon: 'alert-triangle', title: 'Not syncing',
                     detail: `${f.problem.explanation.reason} Last tried ${timeAgo(f.problem.at, f.now)}.`,
-                    signUp: false, action: 'sync',
+                    signUp: false, actions: ['sync'],
                 };
             }
             const parts = [
@@ -93,7 +113,7 @@ export function cardView(f: CardFacts): CardView {
                 `${f.tracked} ${f.tracked === 1 ? 'note' : 'notes'}`,
                 f.lastSync ? `synced ${timeAgo(f.lastSync, f.now)}` : 'not synced yet',
             ].filter(Boolean);
-            return { tone: 'ok', icon: 'check', title: 'Connected', detail: parts.join(' · '), signUp: false, action: 'sync' };
+            return { tone: 'ok', icon: 'check', title: 'Connected', detail: parts.join(' · '), signUp: false, actions: ['sync'] };
         }
     }
 }

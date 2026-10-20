@@ -32,12 +32,60 @@ export function errorMessage(error: unknown, fallback = 'Unknown error'): string
     return toRequestError(error).message ?? fallback;
 }
 
+/** What the server said about a refused request, beyond its status. */
+export interface RefusalDetails {
+    /** The stable error code (docs/admin/api-errors.md), e.g. 'rate_limited'. */
+    code?: string;
+    /** Which limit refused it: 'account', 'network', 'network_refresh', … */
+    scope?: string;
+    /** Seconds until it may be tried again (Retry-After). */
+    retryAfter?: number;
+}
+
 /** An Error carrying an HTTP status, synthesized from a non-2xx response. */
 export class HttpError extends Error {
-    constructor(message: string, readonly status?: number) {
+    constructor(message: string, readonly status?: number, readonly details: RefusalDetails = {}) {
         super(message);
         this.name = 'HttpError';
     }
+}
+
+/** The headers and body of a refused response, as requestUrl returns them. */
+interface RefusedResponse {
+    status: number;
+    headers?: Record<string, string>;
+    json?: unknown;
+}
+
+function header(headers: Record<string, string> | undefined, name: string): string | undefined {
+    if (!headers) return undefined;
+    const key = Object.keys(headers).find(k => k.toLowerCase() === name);
+    return key ? headers[key] : undefined;
+}
+
+/**
+ * The HttpError for a refused response: the server's own message (the error
+ * envelope in api/errors.py), its code and scope, and Retry-After.
+ *
+ * ⛔ Before 0.7.1 an ordinary request let requestUrl throw on a 4xx/5xx, and
+ * that rejection carries only the status and the headers, never the body. So
+ * every refusal read "Request failed, status 429", and a Retry-After the
+ * server sent could not be seen.
+ */
+export function refusal(response: RefusedResponse, fallbackMessage: string): HttpError {
+    let body: { error?: { message?: string; code?: string; scope?: string; retry_after?: unknown; fields?: { code?: string[] } }; detail?: string } | undefined;
+    try {
+        body = response.json as typeof body;
+    } catch {
+        body = undefined; // not JSON: keep the fallback message
+    }
+    const message = body?.error?.fields?.code?.[0] || body?.error?.message || body?.detail || fallbackMessage;
+    const retryAfter = Number(header(response.headers, 'retry-after') ?? body?.error?.retry_after);
+    return new HttpError(message, response.status, {
+        code: body?.error?.code,
+        scope: body?.error?.scope,
+        retryAfter: Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined,
+    });
 }
 
 /**

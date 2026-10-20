@@ -1,9 +1,8 @@
 import { requestUrl, RequestUrlParam, RequestUrlResponse } from 'obsidian';
 import { RefreshError, TokenManager } from '../auth/tokenManager';
-import { HttpError, toRequestError } from '../errors';
+import { refusal } from '../errors';
 import { debugLog } from '../logger';
 import {
-    ApiError,
     BulkSyncItem,
     BulkSyncResponse,
     CurrentUserResponse,
@@ -80,46 +79,43 @@ export class ApiClient {
             options.body = JSON.stringify(body);
         }
 
-        try {
-            const response: RequestUrlResponse = await requestUrl(options);
+        // ⭐ throw: false, so a refusal's body and headers can be read
+        // (refusal() in errors.ts). A request that gets no response at all
+        // still rejects, and that rejection is what "offline" looks like.
+        const response: RequestUrlResponse = await requestUrl({ ...options, throw: false });
 
+        if (response.status < 400) {
             if (response.status === 204 || !response.text) {
                 return {} as T;
             }
-
             return response.json as T;
-        } catch (error) {
-            const reqErr = toRequestError(error);
-            // Handle redirect-induced 405: some HTTP clients (including Obsidian's
-            // requestUrl) downgrade POST→GET on 301/302 redirects. If we get 405,
-            // retry once with method preserved.
-            if (reqErr.status === 405 && method === 'POST' && retryCount < 1) {
-                debugLog('Got 405 on POST (likely redirect downgraded to GET), retrying...');
+        }
+
+        // Handle redirect-induced 405: some HTTP clients (including Obsidian's
+        // requestUrl) downgrade POST→GET on 301/302 redirects. If we get 405,
+        // retry once with method preserved.
+        if (response.status === 405 && method === 'POST' && retryCount < 1) {
+            debugLog('Got 405 on POST (likely redirect downgraded to GET), retrying...');
+            return this.request<T>(method, endpoint, body, retryCount + 1);
+        }
+
+        if (response.status === 401 && retryCount < 1) {
+            debugLog('Got 401, attempting token refresh and retry...');
+            // Rethrows a refresh that failed for a passing reason.
+            const newTokens = await this.tokenManager.handleUnauthorized();
+
+            if (newTokens) {
                 return this.request<T>(method, endpoint, body, retryCount + 1);
             }
-
-            if (reqErr.status === 401 && retryCount < 1) {
-                debugLog('Got 401, attempting token refresh and retry...');
-                const newTokens = await this.tokenManager.handleUnauthorized();
-
-                if (newTokens) {
-                    return this.request<T>(method, endpoint, body, retryCount + 1);
-                }
-                if (this.tokenManager.isAuthInvalidated()) {
-                    throw new RefreshError(
-                        'auth-invalid',
-                        'Pensio session expired — reconnect in the plugin settings'
-                    );
-                }
+            if (this.tokenManager.isAuthInvalidated()) {
+                throw new RefreshError(
+                    'auth-invalid',
+                    'Pensio session expired — reconnect in the plugin settings'
+                );
             }
-
-            if (reqErr.status && reqErr.json) {
-                const apiError = reqErr.json as ApiError;
-                const message = apiError.error?.message || apiError.detail || 'API request failed';
-                throw new HttpError(message, reqErr.status);
-            }
-            throw error;
         }
+
+        throw refusal(response, `Request failed, status ${response.status}`);
     }
 
     private async fetchAllPages<T>(endpoint: string): Promise<T[]> {
@@ -229,18 +225,7 @@ export class ApiClient {
         if (response.status >= 200 && response.status < 300) {
             return response.json as PairResponse;
         }
-
-        let message = fallbackMessage;
-        try {
-            const apiError = response.json as ApiError;
-            message = apiError.error?.fields?.code?.[0]
-                || apiError.error?.message
-                || apiError.detail
-                || message;
-        } catch {
-            // non-JSON error body — keep the generic message
-        }
-        throw new HttpError(message, response.status);
+        throw refusal(response, fallbackMessage);
     }
 
     // ========================================================================

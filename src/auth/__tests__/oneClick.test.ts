@@ -7,6 +7,16 @@
  * - skip the state comparison → "a forged callback" RED;
  * - keep `pending` after a callback → "one callback each" RED;
  * - drop the TTL check → "a request left waiting too long" RED.
+ *
+ * ⭐ 0.7.1 (review F24, F25): several requests may wait at once, kept on this
+ * device across a reload, so a second press or an update does not turn a real
+ * approval into "not started from this vault"; a link opened twice says it was
+ * already used; and a failure that may pass keeps the request for a retry.
+ * Sabotage-checked (2026-10-20), each alone then restored:
+ * - start() replacing the list instead of adding → "a second press" RED;
+ * - restore() ignoring the store → "a reload keeps" RED;
+ * - not recording `used` → "a link opened twice" RED;
+ * - spending the request on every failure → "a passing failure keeps" RED.
  */
 import { createHash } from 'crypto';
 import { challengeFor, OneClickConnect, PENDING_TTL_MS } from '../oneClick';
@@ -15,9 +25,15 @@ function query(url: string): URLSearchParams {
     return new URL(url).searchParams;
 }
 
-function connector(now = () => 1_000) {
+function connector(now = () => 1_000, store?: { load: () => unknown; save: (v: unknown) => void }) {
     const exchange = jest.fn(async () => ({ access: 'a', refresh: 'r' }));
-    return { exchange, connect: new OneClickConnect(exchange, now) };
+    return { exchange, connect: new OneClickConnect(exchange, { now, store }) };
+}
+
+/** Vault-local storage on this device, as Obsidian's saveLocalStorage keeps it. */
+function deviceStorage() {
+    let saved: unknown = null;
+    return { load: () => saved, save: (value: unknown) => { saved = JSON.parse(JSON.stringify(value)) as unknown; } };
 }
 
 describe('challengeFor', () => {
@@ -87,24 +103,49 @@ describe('OneClickConnect', () => {
         expect(exchange).not.toHaveBeenCalled();
     });
 
-    it('takes one callback each', async () => {
+    it('takes one callback each, and a link opened twice says it was already used', async () => {
         const { connect, exchange } = connector();
         const state = query(await connect.start('https://pensio.app', 'vault', 'Obsidian')).get('state') ?? '';
 
         await connect.handleCallback({ code: 'c', state });
         const replay = await connect.handleCallback({ code: 'c', state });
 
-        expect(replay.kind).toBe('not-ours');
+        expect(replay.kind).toBe('already-used');
         expect(exchange).toHaveBeenCalledTimes(1);
     });
 
-    it('a second press replaces the first', async () => {
+    it('a second press does not orphan the approval of the first', async () => {
         const { connect, exchange } = connector();
         const first = query(await connect.start('https://pensio.app', 'vault', 'Obsidian')).get('state') ?? '';
         await connect.start('https://pensio.app', 'vault', 'Obsidian');
 
-        expect((await connect.handleCallback({ code: 'c', state: first })).kind).toBe('not-ours');
-        expect(exchange).not.toHaveBeenCalled();
+        expect((await connect.handleCallback({ code: 'c', state: first })).kind).toBe('connected');
+        expect(exchange).toHaveBeenCalledTimes(1);
+    });
+
+    it('a reload keeps the waiting request, on this device', async () => {
+        const storage = deviceStorage();
+        const before = connector(() => 1_000, storage).connect;
+        const state = query(await before.start('https://pensio.app', 'vault', 'Obsidian')).get('state') ?? '';
+
+        // The plugin reloads (an update, a restart) while she approves.
+        const { connect: after, exchange } = connector(() => 2_000, storage);
+
+        expect((await after.handleCallback({ code: 'c', state })).kind).toBe('connected');
+        expect(exchange).toHaveBeenCalledTimes(1);
+    });
+
+    it('a passing failure keeps the request for a retry; a refusal spends it', async () => {
+        const { connect, exchange } = connector();
+        const state = query(await connect.start('https://pensio.app', 'vault', 'Obsidian')).get('state') ?? '';
+
+        exchange.mockRejectedValueOnce(Object.assign(new Error('busy'), { status: 429 }));
+        await expect(connect.handleCallback({ code: 'c', state })).rejects.toThrow('busy');
+        expect(connect.isWaiting()).toBe(true);
+
+        exchange.mockRejectedValueOnce(Object.assign(new Error('Invalid or expired setup code.'), { status: 400 }));
+        await expect(connect.handleCallback({ code: 'c', state })).rejects.toThrow('Invalid');
+        expect(connect.isWaiting()).toBe(false);
     });
 
     it('a cancelled approval ends the request', async () => {

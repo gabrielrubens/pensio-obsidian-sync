@@ -1,6 +1,8 @@
 import { App, normalizePath, PluginSettingTab, SettingDefinition, SettingDefinitionItem } from 'obsidian';
+import { looksLikeToken } from './auth/identity';
 import { ConnectionSection } from './connectionSection';
 import PensioPlugin from './main';
+import { ConnectionState } from './statusCard';
 import { JournalFolderMapping } from './types';
 
 /** The control key of the journal folder at `index`: `journalFolders.<index>`. */
@@ -33,11 +35,30 @@ function cleanFolder(value: unknown): string {
 export class PensioSettingTab extends PluginSettingTab {
     plugin: PensioPlugin;
     private connection: ConnectionSection;
+    /** The connection state the current definitions were built for. */
+    private builtFor: ConnectionState | null = null;
+    /**
+     * The token fields as typed, applied only as a whole pair (review F5), and
+     * the tokens they started from.
+     */
+    private tokenDraft: { access: string; refresh: string } | null = null;
+    private draftFrom: { access: string; refresh: string } | null = null;
 
     constructor(app: App, plugin: PensioPlugin) {
         super(app, plugin);
         this.plugin = plugin;
         this.connection = new ConnectionSection(plugin, () => this.update());
+        // ⭐ Follow the connection for the plugin's whole life, open or not.
+        // ⛔ Obsidian opens the tab on the definitions built by the LAST
+        // update(), so in 0.7.0 a connection that died while the settings were
+        // closed still opened as Connected (review F18). While the tab is
+        // closed, update() only rebuilds the definitions: no request, no drawing.
+        const stop = plugin.syncStatus?.onChange(() => this.followConnection());
+        if (stop) plugin.register?.(stop);
+    }
+
+    private followConnection(): void {
+        if (this.connection.state() !== this.builtFor) this.update();
     }
 
     /**
@@ -47,6 +68,7 @@ export class PensioSettingTab extends PluginSettingTab {
      * 📐 docs/features/obsidian-plugin.md "The settings screen".
      */
     getSettingDefinitions(): SettingDefinitionItem[] {
+        this.builtFor = this.connection.state();
         return [
             this.connection.cardDefinition(),
             ...this.connection.pairingDefinitions(),
@@ -110,18 +132,8 @@ export class PensioSettingTab extends PluginSettingTab {
                         // ⛔ tests/core/test_the_connection_flow_has_one_door.py reads
                         // this file for `tokenDefinition('Access token'`: the web's
                         // manual-token steps name the field.
-                        this.tokenDefinition(
-                            'Access token',
-                            'For pasting tokens by hand.',
-                            () => this.plugin.getAccessToken(),
-                            (value) => this.plugin.setTokens(value, this.plugin.getRefreshToken()),
-                        ),
-                        this.tokenDefinition(
-                            'Refresh token',
-                            'Paste both, then test.',
-                            () => this.plugin.getRefreshToken(),
-                            (value) => this.plugin.setTokens(this.plugin.getAccessToken(), value),
-                        ),
+                        this.tokenDefinition('Access token', 'For pasting tokens by hand.', 'access'),
+                        this.tokenDefinition('Refresh token', 'Paste both, then test.', 'refresh'),
                         this.connection.testDefinition(),
                     ],
                 },
@@ -201,10 +213,18 @@ export class PensioSettingTab extends PluginSettingTab {
         this.update();
     }
 
-    /** A manual token field: masked, saved as it is typed. */
-    private tokenDefinition(
-        name: string, desc: string, read: () => string, write: (value: string) => Promise<void>,
-    ): SettingDefinition {
+    /**
+     * A manual token field, masked.
+     *
+     * ⛔ In 0.7.0 every keystroke applied the field as a live credential: the
+     * first character cleared from one field wiped the sync history (so the
+     * reconnect after it re-uploaded every note), half-typed tokens were saved
+     * to the keychain, and the old connection was never ended (review F5). Now
+     * what is typed is a draft, applied only when it is a whole pair of Pensio
+     * tokens; both fields emptied stops syncing here, keeping the history, and
+     * the next connect ends the old connection on Pensio.
+     */
+    private tokenDefinition(name: string, desc: string, which: 'access' | 'refresh'): SettingDefinition {
         return {
             name,
             desc,
@@ -212,13 +232,41 @@ export class PensioSettingTab extends PluginSettingTab {
                 setting.addText(text => {
                     text
                         .setPlaceholder(name)
-                        .setValue(read())
+                        .setValue(this.draft()[which])
                         .onChange(async (value) => {
-                            await write(value.trim());
+                            this.draft()[which] = value.trim();
+                            await this.applyTokenDraft();
                         });
                     text.inputEl.type = 'password';
                 });
             },
         };
+    }
+
+    /** The draft, begun from the tokens held now; dropped once they change elsewhere. */
+    private draft(): { access: string; refresh: string } {
+        const held = { access: this.plugin.getAccessToken(), refresh: this.plugin.getRefreshToken() };
+        const changedElsewhere = this.draftFrom
+            && (this.draftFrom.access !== held.access || this.draftFrom.refresh !== held.refresh);
+        if (!this.tokenDraft || changedElsewhere) {
+            this.tokenDraft = { ...held };
+            this.draftFrom = held;
+        }
+        return this.tokenDraft;
+    }
+
+    private async applyTokenDraft(): Promise<void> {
+        const { access, refresh } = this.draft();
+        if (access === this.plugin.getAccessToken() && refresh === this.plugin.getRefreshToken()) return;
+        if (!access && !refresh) {
+            this.draftFrom = { access: '', refresh: '' };
+            await this.plugin.forgetTokens();
+            return;
+        }
+        if (looksLikeToken(access) && looksLikeToken(refresh)) {
+            this.draftFrom = { access, refresh };
+            await this.plugin.setTokens(access, refresh);
+        }
+        // Anything else is a pair still being typed: nothing changes yet.
     }
 }

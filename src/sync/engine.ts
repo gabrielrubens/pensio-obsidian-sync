@@ -14,6 +14,15 @@ import { extractDateFromFilename, ParsedMarkdown, parseMarkdown } from './parser
  * through syncAll() which batches dirty files into bulk API calls.
  * This single code path eliminates dual-path bugs and N+1 queries.
  */
+/** What a sync did. `contacted`: Pensio answered at least one of its requests. */
+export interface SyncResult {
+    synced: number;
+    skipped: number;
+    errors: number;
+    total: number;
+    contacted: boolean;
+}
+
 export class SyncEngine {
     private app: App;
     private settings: PensioSettings;
@@ -21,6 +30,22 @@ export class SyncEngine {
     private isWatching = false;
     private isSyncing = false;
     private syncIntervalTimer: number | null = null;
+    /**
+     * The sync startAutoSync schedules 5 s after it starts. ⛔ Before 0.7.1 it
+     * was never kept, so stopWatching could not cancel it: every settings save
+     * (each keystroke in a folder or token field) armed one more full sync
+     * (review F10).
+     */
+    private initialSyncTimer: number | null = null;
+    /** Mirror delete pages through the whole account: at most this often by itself. */
+    private readonly MIRROR_INTERVAL_MS = 60 * 60 * 1000;
+    private lastMirrorAt = 0;
+    /** The folder settings the last successful sync used (see mirrorAllowed). */
+    private foldersAtLastSync: string;
+    /** The sync running now, so a second caller gets its real result. */
+    private current: Promise<SyncResult> | null = null;
+    /** A request of this sync reached Pensio and was answered. */
+    private contacted = false;
     private readonly MAX_ENTRY_SIZE_MB = 1;
     private readonly SYNC_INTERVAL_MS = 5 * 60 * 1000;
     private readonly INITIAL_SYNC_DELAY_MS = 5000;
@@ -63,8 +88,19 @@ export class SyncEngine {
      */
     onSyncFailed: ((error: unknown) => void) | null = null;
 
-    /** Called after every sync that finished with nothing left failing. */
-    onSyncSucceeded: (() => void) | null = null;
+    /**
+     * Called after every sync that finished with nothing left failing.
+     * `contacted` says whether Pensio answered it: a sync with nothing to send
+     * sends nothing, and ⛔ is not proof that the connection works (review F26).
+     */
+    onSyncSucceeded: ((contacted: boolean) => void) | null = null;
+
+    /**
+     * Asked when a sync has nothing to send: true makes it ask Pensio anyway
+     * (one GET of the sync status), so a problem on screen clears only once
+     * Pensio really answers, and an unchecked account gets checked.
+     */
+    needsContact: (() => boolean) | null = null;
 
     // Bind handlers once to preserve reference for cleanup
     private readonly boundOnFileChanged: (file: TAbstractFile) => void;
@@ -80,6 +116,7 @@ export class SyncEngine {
         this.app = app;
         this.settings = settings;
         this.apiClient = apiClient;
+        this.foldersAtLastSync = this.folderSettings();
 
         // Arrow wrappers (not .bind, which the type-checker widens to `any`)
         // keep a stable reference for off() while staying type-safe.
@@ -118,6 +155,10 @@ export class SyncEngine {
             window.clearTimeout(this.watcherSyncTimer);
             this.watcherSyncTimer = null;
         }
+        if (this.initialSyncTimer) {
+            window.clearTimeout(this.initialSyncTimer);
+            this.initialSyncTimer = null;
+        }
         if (this.stateSaveTimer) {
             window.clearTimeout(this.stateSaveTimer);
             this.stateSaveTimer = null;
@@ -130,8 +171,15 @@ export class SyncEngine {
         this.app.vault.off('rename', this.boundOnFileRenamed);
     }
 
+    /** The automatic sync is running: a failure will be tried again by itself. */
+    isAutoSyncing(): boolean {
+        return this.isWatching && this.syncIntervalTimer !== null;
+    }
+
     startAutoSync(): void {
-        window.setTimeout(() => {
+        if (this.initialSyncTimer) window.clearTimeout(this.initialSyncTimer);
+        this.initialSyncTimer = window.setTimeout(() => {
+            this.initialSyncTimer = null;
             void (async () => {
                 if (!this.isWatching) return;
                 if (this.apiClient.isAuthInvalidated()) {
@@ -338,8 +386,8 @@ export class SyncEngine {
             let result;
             try {
                 result = people
-                    ? await this.apiClient.bulkSync([], items)
-                    : await this.apiClient.bulkSync(items, []);
+                    ? await this.reached(this.apiClient.bulkSync([], items))
+                    : await this.reached(this.apiClient.bulkSync(items, []));
             } catch (error) {
                 console.error('Bulk rename failed:', error);
                 for (const item of items) {
@@ -624,16 +672,31 @@ export class SyncEngine {
     // syncAll — the single sync path
     // ========================================================================
 
-    async syncAll(forceSync: boolean = false): Promise<{ synced: number; skipped: number; errors: number; total: number }> {
+    /**
+     * Sync now. `asked` is true when she pressed something (a command, Sync
+     * now): only then may mirror delete run before its hour is up.
+     *
+     * ⭐ A second call while a sync runs gets THAT sync's result. Before 0.7.1
+     * it got "0 synced, 0 unchanged" at once, which read as a success and
+     * cleared a problem on screen (review F33).
+     */
+    syncAll(forceSync: boolean = false, options: { asked?: boolean } = {}): Promise<SyncResult> {
         if (this.apiClient.isAuthInvalidated()) {
-            throw new RefreshError('auth-invalid', 'Pensio session expired \u2014 reconnect in the plugin settings');
+            return Promise.reject(new RefreshError('auth-invalid', 'Pensio session expired \u2014 reconnect in the plugin settings'));
         }
-        if (this.isSyncing) {
-            debugLog('syncAll skipped — already in progress');
-            return { synced: 0, skipped: 0, errors: 0, total: 0 };
+        if (this.current) {
+            debugLog('syncAll joined the sync already in progress');
+            return this.current;
         }
+        this.current = this.runSync(forceSync, options.asked === true).finally(() => {
+            this.current = null;
+        });
+        return this.current;
+    }
 
+    private async runSync(forceSync: boolean, asked: boolean): Promise<SyncResult> {
         this.isSyncing = true;
+        this.contacted = false;
 
         try {
             debugLog(forceSync
@@ -720,10 +783,16 @@ export class SyncEngine {
             // Send entries in chunks
             const BULK_CHUNK_SIZE = 50;
 
-            for (let i = 0; i < entryItems.length; i += BULK_CHUNK_SIZE) {
+            // ⛔ The first chunk that fails outright (offline, a 429, a dead
+            // session, a server error) ends the sync: every later chunk would
+            // fail the same way, and each one cost a request and a token
+            // refresh, about 39 refreshes a run for a 600-note first sync,
+            // every 5 minutes, into the very limit that refused it (review F20).
+            let halted = false;
+            for (let i = 0; i < entryItems.length && !halted; i += BULK_CHUNK_SIZE) {
                 const chunk = entryItems.slice(i, i + BULK_CHUNK_SIZE);
                 try {
-                    const result = await this.apiClient.bulkSync(chunk, []);
+                    const result = await this.reached(this.apiClient.bulkSync(chunk, []));
                     this.captureProcessingStatus(result.processing_status);
                     debugLog(`Bulk entries ${i + 1}-${i + chunk.length}: ` +
                         `${result.entries.created} created, ${result.entries.updated} updated`);
@@ -748,14 +817,15 @@ export class SyncEngine {
                 } catch (error) {
                     console.error('Bulk entry sync failed:', error);
                     underlying ??= error;
+                    halted = true;
                     errors.push(`Bulk sync chunk: ${(error as Error).message || error}`);
                 }
             }
 
-            for (let i = 0; i < peopleItems.length; i += BULK_CHUNK_SIZE) {
+            for (let i = 0; i < peopleItems.length && !halted; i += BULK_CHUNK_SIZE) {
                 const chunk = peopleItems.slice(i, i + BULK_CHUNK_SIZE);
                 try {
-                    const result = await this.apiClient.bulkSync([], chunk);
+                    const result = await this.reached(this.apiClient.bulkSync([], chunk));
                     this.captureProcessingStatus(result.processing_status);
                     debugLog(`Bulk people ${i + 1}-${i + chunk.length}: ` +
                         `${result.people.created} created, ${result.people.updated} updated`);
@@ -780,13 +850,15 @@ export class SyncEngine {
                 } catch (error) {
                     console.error('Bulk people sync failed:', error);
                     underlying ??= error;
+                    halted = true;
                     errors.push(`Bulk sync chunk: ${(error as Error).message || error}`);
                 }
             }
 
             // Mirror delete
-            if (this.settings.enableMirrorDelete) {
+            if (!halted && this.mirrorAllowed(asked, filesToSync)) {
                 try {
+                    this.lastMirrorAt = Date.now();
                     await this.mirrorDelete(filesToSync);
                 } catch (error) {
                     console.error('Mirror delete failed:', error);
@@ -798,8 +870,17 @@ export class SyncEngine {
             const syncedCount = trackingDeferred.size;
             debugLog('Sync completed');
 
+            // Nothing was sent, and something on screen wants to know whether
+            // Pensio answers: ask it, once.
+            if (!this.contacted && errors.length === 0 && this.needsContact?.()) {
+                await this.reached(this.apiClient.getSyncStatus());
+            }
+
             if (errors.length === 0) {
-                this.lastSyncTime = syncStartTime;
+                this.foldersAtLastSync = this.folderSettings();
+                // Only a sync Pensio answered is a sync: "synced just now"
+                // must not appear after one that sent nothing.
+                if (this.contacted) this.lastSyncTime = syncStartTime;
                 debugLog('Sync complete — tracking', this.syncedFiles.size, 'files');
             }
 
@@ -812,13 +893,61 @@ export class SyncEngine {
             if (errors.length > 0) {
                 throw new SyncFailure(errors, underlying);
             }
-            this.onSyncSucceeded?.();
+            this.onSyncSucceeded?.(this.contacted);
 
             // Return summary for callers that want to show results
-            return { synced: syncedCount, skipped: skippedCount, errors: errors.length, total: filesToSync.length };
+            return {
+                synced: syncedCount, skipped: skippedCount, errors: errors.length,
+                total: filesToSync.length, contacted: this.contacted,
+            };
         } finally {
             this.isSyncing = false;
         }
+    }
+
+    /** Pensio answered this request: the sync has been in touch. */
+    private async reached<T>(request: Promise<T>): Promise<T> {
+        const answer = await request;
+        this.contacted = true;
+        return answer;
+    }
+
+    /** The folder settings a sync walks, as one comparable value. */
+    private folderSettings(): string {
+        return JSON.stringify([this.settings.journalFolders.map(m => m.folder), this.settings.peopleFolder]);
+    }
+
+    /**
+     * Whether this sync may run mirror delete, which deletes every entry whose
+     * note it cannot see. ⛔ So it runs only when what it sees can be trusted
+     * (review F10): with Mirror delete on, clearing a folder field for 5 s
+     * deleted that folder's entries on Pensio. It is skipped when:
+     * - the folder settings changed since the last successful sync (she may be
+     *   typing a path);
+     * - a configured folder that held notes this vault synced does not exist
+     *   now (renamed, or mistyped): a folder that never existed has nothing on
+     *   Pensio to lose, so the default People folder may simply be missing;
+     * - the sync sees no notes at all.
+     * And because it pages through the whole account, it runs by itself at most
+     * once an hour; Sync now or a command runs it at once (review F9).
+     */
+    private mirrorAllowed(asked: boolean, filesToSync: TFile[]): boolean {
+        if (!this.settings.enableMirrorDelete) return false;
+        if (filesToSync.length === 0) return false;
+        if (this.folderSettings() !== this.foldersAtLastSync) {
+            debugLog('Mirror delete skipped: the folder settings changed since the last sync');
+            return false;
+        }
+        const roots = [...this.settings.journalFolders.map(m => m.folder), this.settings.peopleFolder]
+            .filter(folder => folder.trim().length > 0);
+        const tracked = [...this.syncedFiles.keys()];
+        const lostFolder = roots.some(root =>
+            !this.app.vault.getFolderByPath(root) && tracked.some(path => path.startsWith(`${root}/`)));
+        if (lostFolder) {
+            debugLog('Mirror delete skipped: a sync folder with synced notes does not exist');
+            return false;
+        }
+        return asked || Date.now() - this.lastMirrorAt >= this.MIRROR_INTERVAL_MS;
     }
 
     // ========================================================================
@@ -844,7 +973,7 @@ export class SyncEngine {
 
         if (entryDeletes.length > 0) {
             try {
-                const result = await this.apiClient.bulkSync(entryDeletes, []);
+                const result = await this.reached(this.apiClient.bulkSync(entryDeletes, []));
                 debugLog(`Deleted ${result.entries.deleted} entries`);
             } catch (error) {
                 console.error('Bulk entry delete failed:', error);
@@ -853,7 +982,7 @@ export class SyncEngine {
 
         if (peopleDeletes.length > 0) {
             try {
-                const result = await this.apiClient.bulkSync([], peopleDeletes);
+                const result = await this.reached(this.apiClient.bulkSync([], peopleDeletes));
                 debugLog(`Deleted ${result.people.deleted} people`);
             } catch (error) {
                 console.error('Bulk people delete failed:', error);
@@ -871,23 +1000,26 @@ export class SyncEngine {
         const localPaths = new Set(localFiles.map(f => f.path));
 
         try {
-            const serverEntries = await this.apiClient.listEntries();
+            const serverEntries = await this.reached(this.apiClient.listEntries());
             for (const entry of serverEntries) {
                 if (!entry.file_path) continue;
                 if (entry.source !== 'obsidian_plugin') continue;
                 if (!localPaths.has(entry.file_path)) {
                     debugLog(`Deleting entry not in vault: ${entry.file_path}`);
-                    await this.apiClient.deleteEntry(entry.id);
+                    await this.reached(this.apiClient.deleteEntry(entry.id));
+                    // So the note is sent again if it comes back.
+                    this.removeFileTracking(entry.file_path);
                 }
             }
 
-            const serverPeople = await this.apiClient.listPeople();
+            const serverPeople = await this.reached(this.apiClient.listPeople());
             for (const person of serverPeople) {
                 if (!person.person_note_path) continue;
                 if (person.source !== 'obsidian_plugin') continue;
                 if (!localPaths.has(person.person_note_path)) {
                     debugLog(`Deleting person not in vault: ${person.person_note_path}`);
-                    await this.apiClient.deletePerson(person.id);
+                    await this.reached(this.apiClient.deletePerson(person.id));
+                    this.removeFileTracking(person.person_note_path);
                 }
             }
 

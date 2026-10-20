@@ -1,4 +1,5 @@
 import { requestUrl } from 'obsidian';
+import { refusal, RefusalDetails } from '../errors';
 import { debugLog } from '../logger';
 
 export interface TokenData {
@@ -17,7 +18,17 @@ export interface TokenData {
 export type RefreshFailureReason = 'auth-invalid' | 'transient';
 
 export class RefreshError extends Error {
-    constructor(readonly reason: RefreshFailureReason, message: string) {
+    /**
+     * @param status the last HTTP status the refresh got, undefined when no
+     *   response came back at all (offline). A 429 or a 5xx is not "offline",
+     *   and the notice must not say so.
+     */
+    constructor(
+        readonly reason: RefreshFailureReason,
+        message: string,
+        readonly status?: number,
+        readonly details: RefusalDetails = {},
+    ) {
         super(message);
         this.name = 'RefreshError';
     }
@@ -84,6 +95,13 @@ export class TokenManager {
     private expiresAt: number = 0;
     private refreshPromise: Promise<TokenData> | null = null;
     private authInvalidated = false;
+    /**
+     * Bumped whenever the tokens are replaced (initialize, clearTokens). A
+     * refresh that started under an older generation is discarded when it
+     * lands: before 0.7.1 a refresh still in flight when a new connection was
+     * adopted wrote the old family's tokens over the new ones.
+     */
+    private generation = 0;
     private onTokensChanged: OnTokensChanged | null = null;
     private onAuthInvalidated: OnAuthInvalidated | null = null;
     /** Waits before retry 2..n of a failed refresh. Injectable for tests. */
@@ -107,6 +125,8 @@ export class TokenManager {
     }
 
     async initialize(accessToken: string, refreshToken: string): Promise<void> {
+        this.generation++;
+        this.refreshPromise = null;
         this.accessToken = accessToken;
         this.refreshTokenValue = refreshToken;
         this.expiresAt = parseJwtExpiry(accessToken) ?? Date.now() + (30 * 60 * 1000);
@@ -162,6 +182,9 @@ export class TokenManager {
 
         // Normalize: fallback to default if empty, strip www. to avoid Cloudflare 301 redirect
         const baseUrl = (this.apiUrl || 'https://pensio.app').replace('://www.', '://');
+        const generation = this.generation;
+        /** What the server last said, so a failed refresh can say why. */
+        let last: { status?: number; details: RefusalDetails } = { details: {} };
 
         for (let attempt = 0; attempt <= this.retryDelaysMs.length; attempt++) {
             if (attempt > 0) {
@@ -185,7 +208,15 @@ export class TokenManager {
             } catch (error) {
                 // No HTTP response at all (offline, DNS, TLS) — retryable.
                 debugLog(`Token refresh network error (attempt ${attempt + 1}):`, error);
+                last = { details: {} };
                 continue;
+            }
+
+            if (generation !== this.generation) {
+                // New tokens arrived while this one was in flight: its answer
+                // belongs to the connection they replaced.
+                debugLog('Token refresh superseded by new tokens; discarding its result');
+                return this.currentTokens();
             }
 
             if (response.status >= 200 && response.status < 300) {
@@ -222,15 +253,28 @@ export class TokenManager {
                 );
             }
 
-            // Everything else (5xx during a deploy, 429, an unrecognized 4xx)
-            // is treated as transient and retried.
+            // Everything else (5xx during a deploy, an unrecognized 4xx) is
+            // transient and retried. A 429 is not retried here: the limit
+            // lasts minutes, not the seconds between these attempts.
             debugLog(`Token refresh got HTTP ${response.status} (attempt ${attempt + 1})`);
+            last = { status: response.status, details: refusal(response, '').details };
+            if (response.status === 429) break;
         }
 
         throw new RefreshError(
             'transient',
-            'Could not refresh Pensio authentication — will retry on the next sync'
+            'Could not refresh Pensio authentication — will retry on the next sync',
+            last.status,
+            last.details,
         );
+    }
+
+    /** The tokens held now, for a refresh whose answer arrived too late. */
+    private currentTokens(): TokenData {
+        if (this.accessToken && this.refreshTokenValue) {
+            return { accessToken: this.accessToken, refreshToken: this.refreshTokenValue, expiresAt: this.expiresAt };
+        }
+        throw new RefreshError('auth-invalid', 'No refresh token available');
     }
 
     /**
@@ -302,6 +346,10 @@ export class TokenManager {
             return await this.refreshToken();
         } catch (error) {
             console.error('Token refresh on 401 failed:', error);
+            // ⭐ A refresh that failed for a passing reason (offline, busy, a
+            // server error) is rethrown, so the caller says THAT, rather than
+            // reporting the 401 as a dead session (review F22).
+            if (error instanceof RefreshError && error.reason === 'transient') throw error;
             return null;
         }
     }
@@ -310,6 +358,8 @@ export class TokenManager {
      * Forget tokens — explicit logout only. Never called on refresh failure.
      */
     async clearTokens(): Promise<void> {
+        this.generation++;
+        this.refreshPromise = null;
         this.accessToken = null;
         this.refreshTokenValue = null;
         this.expiresAt = 0;
