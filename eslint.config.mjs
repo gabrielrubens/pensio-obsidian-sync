@@ -41,13 +41,16 @@ export default tseslint.config(
             "@typescript-eslint/no-unused-vars": ["error", { args: "none" }],
             "@typescript-eslint/ban-ts-comment": "off",
 
+            // --- On, and they matter -------------------------------------------
+            // `@typescript-eslint/no-deprecated` and
+            // `obsidianmd/settings-tab/prefer-setting-definitions` (both in
+            // the configs above) were switched off while `minAppVersion` was
+            // 1.11.4, where the declarative settings API did not exist. Plugin
+            // 0.6.1 moved to it and to 1.13.0, and the Community plugin review
+            // had reported exactly these: `display()`, `setWarning()`, and a
+            // tab missing from Obsidian's settings search. Keep them on.
+
             // --- Deliberately off (documented) ---------------------------------
-            // We target `minAppVersion: 1.11.4`. `display()`/`setWarning()` and
-            // the imperative settings tab are valid there; the declarative
-            // settings API (getSettingDefinitions) + `setDestructive()` only
-            // exist in 1.13.0+, so "migrating" would break users on 1.11–1.12.
-            "@typescript-eslint/no-deprecated": "off",
-            "obsidianmd/settings-tab/prefer-setting-definitions": "off",
             // The sentence-case rule can't distinguish our proper nouns/acronyms
             // (Pensio, AI, Pensio Journaling Sync) and would wrongly lowercase
             // the brand — the review tooling doesn't enforce it. Casing is

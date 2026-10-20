@@ -1,8 +1,8 @@
 {
     "id": "pensio-sync",
     "name": "Pensio Journaling Sync",
-    "version": "0.6.0",
-    "minAppVersion": "1.11.4",
+    "version": "0.6.1",
+    "minAppVersion": "1.13.0",
     "description": "Sync your journal to Pensio for AI-powered journaling insights: emotion and mood tracking, relationship mapping, and weekly reflections on your notes.",
     "author": "Pensio",
     "authorUrl": "https://pensio.app",

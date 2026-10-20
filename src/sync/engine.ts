@@ -1,9 +1,9 @@
-import { App, TAbstractFile, TFile } from 'obsidian';
+import { App, TAbstractFile, TFile, TFolder } from 'obsidian';
 import { ApiClient } from '../api/client';
 import { debugLog } from '../logger';
-import { BulkSyncItem, PensioSettings, ProcessingStatus, SyncedFileInfo, SyncStateData } from '../types';
+import { BulkSyncItem, CreateEntryRequest, CreatePersonRequest, PensioSettings, ProcessingStatus, SyncedFileInfo, SyncStateData } from '../types';
 import { computeContentHash } from './hash';
-import { extractDateFromFilename, parseMarkdown } from './parser';
+import { extractDateFromFilename, ParsedMarkdown, parseMarkdown } from './parser';
 
 /**
  * Sync engine — watches vault files and syncs to Pensio via bulk API.
@@ -28,6 +28,8 @@ export class SyncEngine {
     // Dirty set: files changed by watcher, pending next syncAll
     private dirtyFiles = new Set<string>();
     private pendingDeletes = new Set<string>();
+    /** Moves waiting to be sent: old path → new path. See `onFileRenamed`. */
+    private pendingRenames = new Map<string, string>();
     private watcherSyncTimer: number | null = null;
 
     // Incremental sync tracking (persisted via onSaveState callback)
@@ -53,6 +55,7 @@ export class SyncEngine {
     // Bind handlers once to preserve reference for cleanup
     private readonly boundOnFileChanged: (file: TAbstractFile) => void;
     private readonly boundOnFileDeleted: (file: TAbstractFile) => void;
+    private readonly boundOnFileRenamed: (file: TAbstractFile, oldPath: string) => void;
 
     constructor(
         app: App,
@@ -68,6 +71,7 @@ export class SyncEngine {
         // keep a stable reference for off() while staying type-safe.
         this.boundOnFileChanged = (file: TAbstractFile) => { this.onFileChanged(file); };
         this.boundOnFileDeleted = (file: TAbstractFile) => { this.onFileDeleted(file); };
+        this.boundOnFileRenamed = (file: TAbstractFile, oldPath: string) => { this.onFileRenamed(file, oldPath); };
     }
 
     // ========================================================================
@@ -83,6 +87,7 @@ export class SyncEngine {
         this.app.vault.on('create', this.boundOnFileChanged);
         this.app.vault.on('modify', this.boundOnFileChanged);
         this.app.vault.on('delete', this.boundOnFileDeleted);
+        this.app.vault.on('rename', this.boundOnFileRenamed);
     }
 
     stopWatching(): void {
@@ -108,6 +113,7 @@ export class SyncEngine {
         this.app.vault.off('create', this.boundOnFileChanged);
         this.app.vault.off('modify', this.boundOnFileChanged);
         this.app.vault.off('delete', this.boundOnFileDeleted);
+        this.app.vault.off('rename', this.boundOnFileRenamed);
     }
 
     startAutoSync(): void {
@@ -176,6 +182,181 @@ export class SyncEngine {
     }
 
     /**
+     * A note was renamed or moved. ⭐ **THE SAME ENTRY, AT ITS NEW PATH** (decided
+     * 2026-10-20). Obsidian fires `rename` — never `create` + `delete` — and this
+     * plugin did not listen for it, so a renamed note became a second entry and
+     * the first stayed behind. Found by the `pensio-prod-demo` fixture vault.
+     *
+     * - inside the synced folders, same kind → a move (`processRenames`)
+     * - out of the synced folders → nothing is sent. ⛔ Moving is not deleting:
+     *   the entry stays (decided 2026-10-20). Mirror delete, if she turned it on,
+     *   is what removes entries whose notes left.
+     * - into the synced folders, never synced, or changed kind → a new note here
+     */
+    private onFileRenamed(file: TAbstractFile, oldPath: string): void {
+        if (file instanceof TFolder) {
+            // A folder moves every note inside it. Whether Obsidian also reports
+            // each child does not matter: the file branch ignores a move it has
+            // already been told about.
+            const walk = (child: TAbstractFile): void => {
+                if (child instanceof TFolder) {
+                    child.children.forEach(walk);
+                } else if (child instanceof TFile) {
+                    this.onFileRenamed(child, oldPath + child.path.slice(file.path.length));
+                }
+            };
+            file.children.forEach(walk);
+            return;
+        }
+        if (!(file instanceof TFile)) return;
+        if (this.pendingRenames.get(oldPath) === file.path) return;
+
+        const wasIn = this.isSyncedPath(oldPath);
+        const isIn = this.isSyncedPath(file.path);
+        if (!wasIn && !isIn) return;
+
+        debugLog('File renamed:', oldPath, '→', file.path);
+        const tracked = this.syncedFiles.get(oldPath);
+        // a → b, then b → c before a sync, is one move from a.
+        let origin: string | undefined;
+        this.pendingRenames.forEach((to, from) => { if (to === oldPath) origin = from; });
+        this.syncedFiles.delete(oldPath);
+        this.dirtyFiles.delete(oldPath);
+
+        const sameKind = wasIn && isIn &&
+            this.detectContentType(oldPath) === this.detectContentType(file.path);
+        if (sameKind && (tracked || origin)) {
+            if (origin) this.pendingRenames.delete(origin);
+            this.pendingRenames.set(origin ?? oldPath, file.path);
+            if (tracked) this.syncedFiles.set(file.path, tracked);
+        } else if (isIn) {
+            this.dirtyFiles.add(file.path);
+        }
+        this.scheduleSyncFromWatcher();
+    }
+
+    /** The bulk payload for a note, as the server's create/update/rename read it. */
+    private buildData(
+        file: TFile,
+        parsed: ParsedMarkdown,
+    ): { kind: 'person'; data: CreatePersonRequest } | { kind: 'entry'; data: CreateEntryRequest } {
+        const contentType = this.detectContentType(file.path);
+        if (contentType === 'person') {
+            return {
+                kind: 'person',
+                data: {
+                    // No `aliases` key, deliberately. The backend reads
+                    // `aliases:` out of the note's own frontmatter, the
+                    // way it already reads relationship and birthday —
+                    // and this sent a hardcoded `[]` with every note it
+                    // re-sends, which EMPTIED aliases typed in the web
+                    // UI on the next sync. The field a note does not
+                    // speak for is a field this payload leaves out.
+                    name: parsed.title || file.basename,
+                    person_note_path: file.path,
+                    relationship: '',
+                    birthday: null,
+                    tags: [],
+                    from_locations: [],
+                    lived_in: [],
+                    metadata: { raw_content: parsed.content },
+                },
+            };
+        }
+        const entryDate = parsed.date
+            || extractDateFromFilename(file.name)
+            || new Date(file.stat.ctime).toISOString().slice(0, 10);
+        return {
+            kind: 'entry',
+            data: {
+                title: parsed.title || file.basename,
+                content_html: parsed.content,
+                content_plain: parsed.content,
+                entry_date: entryDate,
+                entry_type: parsed.entryType || contentType,
+                file_path: file.path,
+                frontmatter: {},
+                file_modified_at: new Date(file.stat.mtime).toISOString(),
+            },
+        };
+    }
+
+    /**
+     * Send the queued moves. ⭐ **AN OLDER SERVER IS KNOWN BY WHAT IT ANSWERS**,
+     * never by an error message — those are translated. A server that can move a
+     * row says `capabilities.rename` on every bulk answer; one that cannot
+     * refuses the item and says nothing, and the note falls back to delete +
+     * create (decided 2026-10-20). A server that CAN rename and still refuses
+     * gets the note synced where it is now and nothing deleted.
+     */
+    private async processRenames(): Promise<void> {
+        const moves = Array.from(this.pendingRenames.entries());
+        this.pendingRenames.clear();
+
+        const entryItems: BulkSyncItem[] = [];
+        const peopleItems: BulkSyncItem[] = [];
+        const sent = new Map<string, { file: TFile; hash: string }>();
+
+        for (const [from, to] of moves) {
+            const file = this.app.vault.getAbstractFileByPath(to);
+            if (!(file instanceof TFile)) continue; // moved again or gone before this ran
+            try {
+                const content = await this.app.vault.read(file);
+                if (new Blob([content]).size / (1024 * 1024) > this.MAX_ENTRY_SIZE_MB) {
+                    this.dirtyFiles.add(to); // the loop reports it as too large
+                    continue;
+                }
+                const hash = await computeContentHash(content);
+                const built = this.buildData(file, parseMarkdown(content));
+                const item: BulkSyncItem = { action: 'rename', file_path: from, new_file_path: to, data: built.data };
+                (built.kind === 'person' ? peopleItems : entryItems).push(item);
+                sent.set(from, { file, hash });
+            } catch (error) {
+                console.error(`Failed to prepare rename ${from} → ${to}:`, error);
+                this.dirtyFiles.add(to);
+            }
+        }
+
+        const send = async (items: BulkSyncItem[], people: boolean): Promise<void> => {
+            if (items.length === 0) return;
+            let result;
+            try {
+                result = people
+                    ? await this.apiClient.bulkSync([], items)
+                    : await this.apiClient.bulkSync(items, []);
+            } catch (error) {
+                console.error('Bulk rename failed:', error);
+                for (const item of items) {
+                    if (item.new_file_path) this.pendingRenames.set(item.file_path, item.new_file_path);
+                }
+                return;
+            }
+            this.captureProcessingStatus(result.processing_status);
+            const section = people ? result.people : result.entries;
+            const refused = new Set(section.errors.map((err: { file_path: string }) => err.file_path));
+            const canRename = result.capabilities?.rename === true;
+            for (const item of items) {
+                const info = sent.get(item.file_path);
+                if (!info) continue;
+                const failed = refused.has(item.file_path) ||
+                    (item.new_file_path !== undefined && refused.has(item.new_file_path));
+                if (!failed) {
+                    this.updateFileTracking(info.file, info.hash);
+                    continue;
+                }
+                this.removeFileTracking(info.file.path);
+                this.dirtyFiles.add(info.file.path);
+                if (!canRename) {
+                    this.pendingDeletes.add(item.file_path);
+                }
+            }
+        };
+
+        await send(entryItems, false);
+        await send(peopleItems, true);
+    }
+
+    /**
      * Schedule a syncAll after a short debounce, so rapid edits batch together.
      */
     private scheduleSyncFromWatcher(): void {
@@ -215,21 +396,68 @@ export class SyncEngine {
     // ========================================================================
 
     shouldSyncFile(file: TFile): boolean {
-        if (!file.path.endsWith('.md')) return false;
+        return this.isSyncedPath(file.path);
+    }
+
+    /** The folder rule, on a path — so a rename's old path can be judged too. */
+    private isSyncedPath(path: string): boolean {
+        if (!path.endsWith('.md')) return false;
 
         const inJournalFolder = this.settings.journalFolders.some(mapping =>
             mapping.folder.trim().length > 0 &&
-            file.path.startsWith(mapping.folder + '/')
+            path.startsWith(mapping.folder + '/')
         );
         if (inJournalFolder) return true;
 
         if (this.settings.peopleFolder.trim().length > 0) {
-            if (file.path.startsWith(this.settings.peopleFolder + '/')) {
+            if (path.startsWith(this.settings.peopleFolder + '/')) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * The files to sync: the ones inside the configured folders, and nothing
+     * else.
+     *
+     * ⭐ Walks only those folders instead of listing the whole vault and
+     * filtering it: the plugin never needs a path outside them, and the
+     * Community plugin review reports a whole-vault listing as access to every
+     * file path in the vault. `shouldSyncFile` is still the rule — this only
+     * stops asking for paths it would refuse.
+     *
+     * ⛔ Mirror delete removes a server entry whose file is missing from this
+     * list, so it must hold every file the old `getMarkdownFiles()` filter
+     * held. A folder is looked up by its setting exactly as `shouldSyncFile`
+     * compares it (untrimmed), and a file in two configured folders (one
+     * nested in the other) is listed once. 🧪 `folderScopedReads.test.ts`
+     * compares the two on the same vault.
+     */
+    private filesInSyncFolders(): TFile[] {
+        const roots = [
+            ...this.settings.journalFolders.map(mapping => mapping.folder),
+            this.settings.peopleFolder,
+        ].filter(folder => folder.trim().length > 0);
+
+        const files: TFile[] = [];
+        const seen = new Set<string>();
+        const walk = (folder: TFolder): void => {
+            for (const child of folder.children) {
+                if (child instanceof TFolder) {
+                    walk(child);
+                } else if (child instanceof TFile && !seen.has(child.path) && this.shouldSyncFile(child)) {
+                    seen.add(child.path);
+                    files.push(child);
+                }
+            }
+        };
+        for (const root of roots) {
+            const folder = this.app.vault.getFolderByPath(root);
+            if (folder) walk(folder);
+        }
+        return files;
     }
 
     private detectContentType(filePath: string): string {
@@ -392,14 +620,19 @@ export class SyncEngine {
 
             const syncStartTime = Date.now();
 
-            // Process pending deletes first
+            // Renames first — an older server's fallback queues a delete, which
+            // the next step sends, and a create, which the loop below sends.
+            if (this.pendingRenames.size > 0) {
+                await this.processRenames();
+            }
+
+            // Then pending deletes
             if (this.pendingDeletes.size > 0) {
                 await this.processDeletes();
             }
 
             // Collect files to sync
-            const files = this.app.vault.getMarkdownFiles();
-            const filesToSync = files.filter(file => this.shouldSyncFile(file));
+            const filesToSync = this.filesInSyncFolders();
             debugLog(`Found ${filesToSync.length} files to check`);
 
             const errors: string[] = [];
@@ -431,7 +664,6 @@ export class SyncEngine {
                     }
 
                     const parsed = parseMarkdown(content);
-                    const contentType = this.detectContentType(file.path);
 
                     const sizeMB = new Blob([content]).size / (1024 * 1024);
                     if (sizeMB > this.MAX_ENTRY_SIZE_MB) {
@@ -439,44 +671,12 @@ export class SyncEngine {
                         continue;
                     }
 
-                    if (contentType === 'person') {
-                        const personName = parsed.title || file.basename;
-                        peopleItems.push({
-                            action: 'create',
-                            file_path: file.path,
-                            data: {
-                                name: personName,
-                                aliases: [],
-                                person_note_path: file.path,
-                                relationship: '',
-                                birthday: null,
-                                tags: [],
-                                from_locations: [],
-                                lived_in: [],
-                                metadata: { raw_content: parsed.content },
-                            },
-                        });
-                    } else {
-                        const entryDate = parsed.date
-                            || extractDateFromFilename(file.name)
-                            || new Date(file.stat.ctime).toISOString().slice(0, 10);
-                        const entryType = parsed.entryType || contentType;
-
-                        entryItems.push({
-                            action: 'create',
-                            file_path: file.path,
-                            data: {
-                                title: parsed.title || file.basename,
-                                content_html: parsed.content,
-                                content_plain: parsed.content,
-                                entry_date: entryDate,
-                                entry_type: entryType,
-                                file_path: file.path,
-                                frontmatter: {},
-                                file_modified_at: new Date(file.stat.mtime).toISOString(),
-                            },
-                        });
-                    }
+                    const built = this.buildData(file, parsed);
+                    (built.kind === 'person' ? peopleItems : entryItems).push({
+                        action: 'create',
+                        file_path: file.path,
+                        data: built.data,
+                    });
 
                     trackingDeferred.set(file.path, { file, hash });
                 } catch (error) {

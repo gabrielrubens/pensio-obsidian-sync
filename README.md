@@ -26,7 +26,9 @@ This plugin connects your Obsidian vault to Pensio so you can keep writing in yo
 - **Secure authentication** — one-time pairing code, per-device tokens with automatic refresh, stored via Obsidian's SecretStorage
 - **Account safety** — detects account switches and prevents cross-account data leaks
 - **People folder sync** — dedicated folder for relationship notes, synced as Pensio relationship profiles
-- **Mirror delete** — entries removed from your vault are removed from Pensio (only plugin-created entries)
+- **Renames follow your notes** — rename or move a note and its Pensio entry moves with it, keeping its emotion reading and links. Moving a note out of your synced folders keeps its entry
+- **Deletes follow your vault** — deleting a note in Obsidian deletes the entry the plugin made from it (only plugin-created entries, never web ones)
+- **Mirror delete** (opt-in) — also removes entries whose notes left your synced folders while Obsidian was closed or outside it
 - **Status bar** — live sync status with tracked file count
 - **Mobile compatible** — works on Obsidian mobile (iOS & Android)
 
@@ -113,6 +115,10 @@ title: My reflection on change
 ---
 ```
 
+**Frontmatter is metadata, not writing.** Pensio keeps it alongside the entry; word counts and Pensio's AI read only what you wrote under it.
+
+**An empty note is not an entry.** A note with nothing written under its frontmatter (a new blank note, a template that is only properties) stays in your vault and becomes an entry the first time it has words.
+
 ## How it works
 
 1. **File watching** — the plugin monitors your configured folders for changes
@@ -146,6 +152,8 @@ Add a `relationship` field to categorize the person:
 title: Sarah
 relationship: close_friend
 birthday: 1990-05-15
+aliases:
+  - Sar
 tags:
   - college
   - roommate
@@ -153,9 +161,18 @@ tags:
 Notes about Sarah...
 ```
 
+`aliases` are other names for the person: with the note above, `[[Sar]]` in a journal entry's text links to Sarah.
+
 **Accepted `relationship` values**: `partner`, `family`, `close_friend`, `friend`, `coworker`, `professional`, `acquaintance`, `other`. Legacy formats (e.g., `1:👪 Family`, `Friend`) are normalized automatically on sync.
 
-When you mention someone in a journal entry using an Obsidian wiki-link — the person's note name wrapped in double square brackets — Pensio automatically links that mention to their relationship profile, whether the profile came from the People folder or from the wiki-link itself.
+When you mention someone in a journal entry using an Obsidian wiki-link — the person's note name (or one of their `aliases`) wrapped in double square brackets — Pensio links that mention to their relationship profile. A wiki-link in the text only links someone who already exists. To create a person from an entry, list them under `People:` in the entry's frontmatter:
+
+```yaml
+---
+People:
+  - "[[Sarah]]"
+---
+```
 
 Configure the People folder path in Settings → Pensio Journaling Sync → Advanced. Set it to empty to disable people sync.
 

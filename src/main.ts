@@ -444,7 +444,7 @@ export default class PensioPlugin extends Plugin {
         } else {
             new Notice('Connected \u2014 verifying account on first sync');
         }
-        this.settingTab?.display();
+        this.settingTab?.update();
     }
 
     updateStatusBar(status: StatusBarState, detail?: string) {

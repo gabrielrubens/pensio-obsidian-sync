@@ -114,7 +114,10 @@ export interface CreateEntryRequest {
 
 export interface CreatePersonRequest {
     name: string;
-    aliases: string[];
+    // ⛔ No `aliases`. The backend parses `aliases:` from the note's frontmatter;
+    // a payload that carries the field at all can only overwrite what is stored,
+    // and the hardcoded `[]` this used to send did exactly that to aliases set in
+    // the web UI. Read them back from PersonResponse, never send them.
     person_note_path: string;
     relationship: string;
     birthday: string | null;
@@ -128,8 +131,11 @@ export interface CreatePersonRequest {
  * Bulk sync request item
  */
 export interface BulkSyncItem {
-    action: 'create' | 'update' | 'delete';
+    action: 'create' | 'update' | 'delete' | 'rename';
+    /** The note's path — for a rename, where it WAS. */
     file_path: string;
+    /** Rename only: where the note is now. */
+    new_file_path?: string;
     data?: CreateEntryRequest | CreatePersonRequest;
 }
 
@@ -158,6 +164,8 @@ export interface BulkSyncResponse {
         created: number;
         updated: number;
         deleted: number;
+        /** Optional: absent on servers that cannot move a row. */
+        renamed?: number;
         skipped: number;
         errors: Array<{ file_path: string; error: string }>;
     };
@@ -165,10 +173,21 @@ export interface BulkSyncResponse {
         created: number;
         updated: number;
         deleted: number;
+        /** Optional: absent on servers that cannot move a row. */
+        renamed?: number;
         skipped: number;
         errors: Array<{ file_path: string; error: string }>;
     };
     total_time_ms: number;
+    /**
+     * What this server can do beyond create/update/delete. Optional: absent on
+     * servers older than the rename support. ⚠️ Absence is the signal that a
+     * rename must fall back to delete + create — never an error message, which
+     * is translated (`engine.ts::processRenames`).
+     */
+    capabilities?: {
+        rename?: boolean;
+    };
     /**
      * Optional: omitted by Pensio servers older than v0.5.3 and by
      * self-hosted instances that have not updated. Treat absence as

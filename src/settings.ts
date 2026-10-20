@@ -1,44 +1,35 @@
-import { App, FuzzySuggestModal, normalizePath, PluginSettingTab, Setting, TFolder } from 'obsidian';
+import { App, normalizePath, PluginSettingTab, SettingDefinition, SettingDefinitionItem } from 'obsidian';
 import { ConnectionSection } from './connectionSection';
 import PensioPlugin from './main';
+import { JournalFolderMapping } from './types';
 
-/**
- * Folder suggest modal for selecting folders
- */
-class FolderSuggestModal extends FuzzySuggestModal<TFolder> {
-    private onChooseFolderCallback: (folder: TFolder) => void;
+/** The control key of the journal folder at `index`: `journalFolders.<index>`. */
+const journalFolderKey = (index: number): string => `journalFolders.${index}`;
 
-    constructor(app: App, onChooseFolder: (folder: TFolder) => void) {
-        super(app);
-        this.onChooseFolderCallback = onChooseFolder;
-    }
-
-    getItems(): TFolder[] {
-        const folders: TFolder[] = [];
-        const rootFolder = this.app.vault.getRoot();
-
-        const addFolders = (folder: TFolder) => {
-            folders.push(folder);
-            for (const child of folder.children) {
-                if (child instanceof TFolder) {
-                    addFolders(child);
-                }
-            }
-        };
-
-        addFolders(rootFolder);
-        return folders;
-    }
-
-    getItemText(folder: TFolder): string {
-        return folder.path || '/';
-    }
-
-    onChooseItem(folder: TFolder, evt: MouseEvent | KeyboardEvent): void {
-        this.onChooseFolderCallback(folder);
-    }
+function journalFolderIndex(key: string): number | null {
+    const match = /^journalFolders\.(\d+)$/.exec(key);
+    return match ? Number(match[1]) : null;
 }
 
+/** A folder as it is stored: trimmed and normalized, and empty when cleared. */
+function cleanFolder(value: unknown): string {
+    const trimmed = (typeof value === 'string' ? value : '').trim();
+    return trimmed ? normalizePath(trimmed) : '';
+}
+
+/**
+ * The settings tab, built from setting definitions (Obsidian 1.13's
+ * declarative settings API), so every setting is found by Obsidian's settings
+ * search.
+ *
+ * ⛔ Nothing here calls `display()` or `setWarning()`: both are deprecated
+ * since 1.13.0, and the Community plugin review reports each one. Re-rendering
+ * is `update()`, which builds the definitions again; a destructive button is
+ * `setDestructive()`. `minAppVersion` is 1.13.0 for exactly this.
+ *
+ * ⛔ Every control writes through `setControlValue` below, never the
+ * framework's default — see it for why.
+ */
 export class PensioSettingTab extends PluginSettingTab {
     plugin: PensioPlugin;
     private connection: ConnectionSection;
@@ -46,238 +37,207 @@ export class PensioSettingTab extends PluginSettingTab {
     constructor(app: App, plugin: PensioPlugin) {
         super(app, plugin);
         this.plugin = plugin;
-        this.connection = new ConnectionSection(plugin, () => this.display());
+        this.connection = new ConnectionSection(plugin, () => this.update());
     }
 
-    display(): void {
-        const { containerEl } = this;
+    getSettingDefinitions(): SettingDefinitionItem[] {
+        return [
+            this.brandingDefinition(),
+            { type: 'group', heading: 'Connection', items: this.connection.definitions() },
+            this.journalFolderList(),
+            {
+                type: 'group',
+                items: [
+                    {
+                        name: 'People folder',
+                        desc:
+                            'Each .md file becomes a relationship in Pensio. ' +
+                            'Use [[Name]] wikilinks in journal entries to connect entries to people automatically.',
+                        control: { type: 'folder', key: 'peopleFolder', placeholder: 'People' },
+                    },
+                    {
+                        name: 'Auto-sync',
+                        desc: 'Automatically sync when files change and run periodic sync every 5 minutes',
+                        control: { type: 'toggle', key: 'autoSync' },
+                    },
+                ],
+            },
+            {
+                type: 'group',
+                heading: 'Links',
+                items: [
+                    {
+                        name: 'Documentation',
+                        desc: 'Setup guide, features, and troubleshooting',
+                        action: () => {
+                            window.open('https://pensio.app/features/obsidian-sync/');
+                        },
+                    },
+                    {
+                        name: 'Report an issue',
+                        desc: 'Found a bug or have a suggestion?',
+                        action: () => {
+                            window.open('https://github.com/gabrielrubens/pensio-obsidian-sync/issues');
+                        },
+                    },
+                ],
+            },
+            {
+                type: 'group',
+                heading: 'Advanced',
+                items: [
+                    {
+                        name: 'Server URL',
+                        desc: 'For development or testing only',
+                        control: { type: 'text', key: 'apiUrl', placeholder: 'https://pensio.app' },
+                    },
+                    {
+                        name: 'Mirror delete',
+                        desc:
+                            'Delete server entries that no longer exist in your vault. ' +
+                            'Only affects entries created by this plugin — web-created entries are never touched. Use with caution.',
+                        control: { type: 'toggle', key: 'enableMirrorDelete' },
+                    },
+                    {
+                        name: 'Debug mode',
+                        desc: 'Enable verbose console logging for troubleshooting',
+                        control: { type: 'toggle', key: 'debugMode' },
+                    },
+                    // Manual token entry — for self-hosters who prefer pasting
+                    // JWTs over connecting. The normal path is Connect above.
+                    // ⚠️ Not a `secret` control: that one stores the NAME of a
+                    // secret the person picks from Obsidian's keychain, and these
+                    // are the token values themselves, kept by the plugin.
+                    this.tokenDefinition(
+                        'Access token',
+                        'Manual token entry (advanced) — prefer Connect',
+                        () => this.plugin.getAccessToken(),
+                        (value) => this.plugin.setTokens(value, this.plugin.getRefreshToken()),
+                    ),
+                    this.tokenDefinition(
+                        'Refresh token',
+                        'Both tokens are required when entered manually',
+                        () => this.plugin.getRefreshToken(),
+                        (value) => this.plugin.setTokens(this.plugin.getAccessToken(), value),
+                    ),
+                    this.connection.testDefinition(),
+                ],
+            },
+        ];
+    }
 
-        containerEl.empty();
-
-        // --- Pensio branding ---
-        this.renderBranding(containerEl);
-
-        // --- Connection ---
-        new Setting(containerEl).setName('Connection').setHeading();
-
-        this.connection.render(containerEl);
-
-        // --- Sync folders ---
-        new Setting(containerEl).setName('Sync folders').setHeading();
-
-        containerEl.createEl('p', {
-            cls: 'setting-item-description pensio-folder-desc',
-            text: 'Add folders containing journal files. All .md files sync as Daily Journal entries. Use frontmatter "type:" to override per file.',
-        });
-
-        // Render each existing mapping
-        for (let i = 0; i < this.plugin.settings.journalFolders.length; i++) {
-            this.renderFolderMapping(containerEl, i);
+    getControlValue(key: string): unknown {
+        const folder = journalFolderIndex(key);
+        if (folder !== null) {
+            return this.plugin.settings.journalFolders[folder]?.folder ?? '';
         }
-
-        // Add folder button
-        new Setting(containerEl)
-            .addButton(button => button
-                .setButtonText('+ Add journal folder')
-                .onClick(async () => {
-                    this.plugin.settings.journalFolders.push({
-                        folder: '',
-                    });
-                    await this.plugin.saveSettings();
-                    this.display();
-                }));
-
-        new Setting(containerEl)
-            .setName('People folder')
-            .setDesc(
-                'Each .md file becomes a relationship in Pensio. ' +
-                'Use [[Name]] wikilinks in journal entries to connect entries to people automatically.'
-            )
-            .addText(text => {
-                text
-                    .setPlaceholder('People')
-                    .setValue(this.plugin.settings.peopleFolder)
-                    .onChange(async (value) => {
-                        this.plugin.settings.peopleFolder = normalizePath(value.trim());
-                        await this.plugin.saveSettings();
-                    });
-            })
-            .addButton(button => button
-                .setButtonText('Browse')
-                .onClick(() => {
-                    new FolderSuggestModal(this.app, (folder) => {
-                        void (async () => {
-                            this.plugin.settings.peopleFolder = folder.path;
-                            await this.plugin.saveSettings();
-                            this.display();
-                        })();
-                    }).open();
-                }));
-
-        new Setting(containerEl)
-            .setName('Auto-sync')
-            .setDesc('Automatically sync when files change and run periodic sync every 5 minutes')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.autoSync)
-                .onChange(async (value) => {
-                    this.plugin.settings.autoSync = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        // --- Links ---
-        new Setting(containerEl).setName('Links').setHeading();
-
-        new Setting(containerEl)
-            .setName('Documentation')
-            .setDesc('Setup guide, features, and troubleshooting')
-            .addButton(button => button
-                .setButtonText('Open docs')
-                .onClick(() => {
-                    window.open('https://pensio.app/features/obsidian-sync/');
-                }));
-
-        new Setting(containerEl)
-            .setName('Report an issue')
-            .setDesc('Found a bug or have a suggestion?')
-            .addButton(button => button
-                .setButtonText('Open GitHub')
-                .onClick(() => {
-                    window.open('https://github.com/gabrielrubens/pensio-obsidian-sync/issues');
-                }));
-
-        // --- Advanced ---
-        new Setting(containerEl).setName('Advanced').setHeading();
-
-        new Setting(containerEl)
-            .setName('Server URL')
-            .setDesc('For development or testing only')
-            .addText(text => text
-                .setPlaceholder('https://pensio.app')
-                .setValue(this.plugin.settings.apiUrl)
-                .onChange(async (value) => {
-                    this.plugin.settings.apiUrl = value.trim();
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(containerEl)
-            .setName('Mirror delete')
-            .setDesc(
-                'Delete server entries that no longer exist in your vault. ' +
-                'Only affects entries created by this plugin — web-created entries are never touched. Use with caution.'
-            )
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.enableMirrorDelete)
-                .onChange(async (value) => {
-                    this.plugin.settings.enableMirrorDelete = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(containerEl)
-            .setName('Debug mode')
-            .setDesc('Enable verbose console logging for troubleshooting')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.debugMode)
-                .onChange(async (value) => {
-                    this.plugin.settings.debugMode = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        // Manual token entry — for self-hosters who prefer pasting JWTs over
-        // the setup-code pairing. The normal path is the Setup code above.
-        new Setting(containerEl)
-            .setName('Access token')
-            .setDesc('Manual token entry (advanced) — prefer the setup code')
-            .addText(text => {
-                text
-                    .setPlaceholder('Access token')
-                    .setValue(this.plugin.getAccessToken())
-                    .onChange(async (value) => {
-                        await this.plugin.setTokens(value.trim(), this.plugin.getRefreshToken());
-                    });
-                text.inputEl.type = 'password';
-            });
-
-        new Setting(containerEl)
-            .setName('Refresh token')
-            .setDesc('Both tokens are required when entered manually')
-            .addText(text => {
-                text
-                    .setPlaceholder('Refresh token')
-                    .setValue(this.plugin.getRefreshToken())
-                    .onChange(async (value) => {
-                        await this.plugin.setTokens(this.plugin.getAccessToken(), value.trim());
-                    });
-                text.inputEl.type = 'password';
-            });
-
-        this.connection.renderTestButton(containerEl);
+        return (this.plugin.settings as unknown as Record<string, unknown>)[key];
     }
 
     /**
-     * Render the Pensio branding block at the top of settings.
+     * ⛔ Every write goes through `plugin.saveSettings()`. The framework's
+     * default writes `saveData(this.plugin.settings)`, which would drop
+     * `_syncState` from data.json — so any toggle would forget which files
+     * were synced, and the next sync would check the whole vault again — and
+     * would skip the rest of `saveSettings()`: a new Server URL would never
+     * reach the API client, and switching Auto-sync off would leave the file
+     * watcher syncing until Obsidian restarted.
+     * 🧪 `settingDefinitions.test.ts` drives the real `saveSettings()`.
      */
-    private renderBranding(containerEl: HTMLElement): void {
-        const brandingEl = containerEl.createDiv({ cls: 'pensio-branding' });
-
-        const titleRow = brandingEl.createDiv({ cls: 'pensio-branding-title' });
-        titleRow.createSpan({ text: '✦ ', cls: 'pensio-branding-icon' });
-        titleRow.createSpan({ text: 'Pensio', cls: 'pensio-branding-name' });
-        titleRow.createSpan({ text: 'Beta', cls: 'pensio-beta-badge' });
-
-        brandingEl.createEl('p', {
-            cls: 'pensio-branding-tagline',
-            text: 'AI-powered journaling \u2014 emotion tracking, insights, relationship mapping, and an AI advisor that knows your entire journal.',
-        });
-
-        const learnMore = brandingEl.createEl('a', {
-            text: 'Learn more at pensio.app',
-            href: 'https://pensio.app',
-            cls: 'pensio-branding-link',
-        });
-        learnMore.setAttr('target', '_blank');
+    async setControlValue(key: string, value: unknown): Promise<void> {
+        const settings = this.plugin.settings;
+        const folder = journalFolderIndex(key);
+        if (folder !== null) {
+            if (!settings.journalFolders[folder]) return;
+            settings.journalFolders[folder].folder = cleanFolder(value);
+        } else if (key === 'peopleFolder') {
+            settings.peopleFolder = cleanFolder(value);
+        } else if (key === 'apiUrl') {
+            settings.apiUrl = (typeof value === 'string' ? value : '').trim();
+        } else if (key === 'autoSync' || key === 'enableMirrorDelete' || key === 'debugMode') {
+            settings[key] = value === true;
+        } else {
+            return;
+        }
+        await this.plugin.saveSettings();
     }
 
     /**
-     * Render a single journal folder mapping row.
-     * Shows: [folder text + browse] [remove button]
+     * The Pensio branding row at the top of settings.
      */
-    private renderFolderMapping(containerEl: HTMLElement, index: number): void {
-        const mapping = this.plugin.settings.journalFolders[index];
+    private brandingDefinition(): SettingDefinition {
+        return {
+            name: 'Pensio',
+            desc: 'AI-powered journaling \u2014 emotion tracking, insights, relationship mapping, and an AI advisor that knows your entire journal.',
+            searchable: false,
+            render: (setting) => {
+                setting.setClass('pensio-branding');
+                setting.nameEl.prepend(setting.nameEl.createSpan({ text: '✦ ', cls: 'pensio-branding-icon' }));
+                setting.nameEl.createSpan({ text: 'Beta', cls: 'pensio-beta-badge' });
 
-        const setting = new Setting(containerEl)
-            .setName(`Folder ${index + 1}`)
-            .addText(text => {
-                text
-                    .setPlaceholder('Folder path')
-                    .setValue(mapping.folder)
-                    .onChange(async (value) => {
-                        this.plugin.settings.journalFolders[index].folder = normalizePath(value.trim());
-                        await this.plugin.saveSettings();
-                    });
-            })
-            .addButton(button => button
-                .setButtonText('Browse')
-                .onClick(() => {
-                    new FolderSuggestModal(this.app, (folder) => {
-                        void (async () => {
-                            this.plugin.settings.journalFolders[index].folder = folder.path;
-                            await this.plugin.saveSettings();
-                            this.display();
-                        })();
-                    }).open();
-                }));
-
-        // Only show remove button if there's more than one folder
-        if (this.plugin.settings.journalFolders.length > 1) {
-            setting.addButton(button => button
-                .setButtonText('Remove')
-                .setWarning()
-                .onClick(async () => {
-                    this.plugin.settings.journalFolders.splice(index, 1);
-                    await this.plugin.saveSettings();
-                    this.display();
-                }));
-        }
+                const learnMore = setting.descEl.createEl('a', {
+                    text: 'Learn more at pensio.app',
+                    href: 'https://pensio.app',
+                    cls: 'pensio-branding-link',
+                });
+                learnMore.setAttr('target', '_blank');
+            },
+        };
     }
 
+    /**
+     * The journal folders: every .md file inside one syncs as an entry.
+     */
+    private journalFolderList(): SettingDefinitionItem {
+        return {
+            type: 'list',
+            heading: 'Journal folders',
+            emptyState:
+                'Add a folder, and every .md file in it syncs as a Daily Journal entry.',
+            items: this.plugin.settings.journalFolders.map((_, index) => ({
+                name: `Folder ${index + 1}`,
+                desc: 'All .md files sync as Daily Journal entries. Use frontmatter "type:" to override per file.',
+                control: { type: 'folder' as const, key: journalFolderKey(index), placeholder: 'Folder path' },
+            })),
+            addItem: {
+                name: 'Add journal folder',
+                action: () => {
+                    void this.changeJournalFolders(folders => folders.push({ folder: '' }));
+                },
+            },
+            onDelete: (index) => {
+                void this.changeJournalFolders(folders => folders.splice(index, 1));
+            },
+        };
+    }
+
+    /** Add or remove a journal folder, save, and draw the list again. */
+    private async changeJournalFolders(
+        change: (folders: JournalFolderMapping[]) => void,
+    ): Promise<void> {
+        change(this.plugin.settings.journalFolders);
+        await this.plugin.saveSettings();
+        this.update();
+    }
+
+    /** A manual token field: masked, saved as it is typed. */
+    private tokenDefinition(
+        name: string, desc: string, read: () => string, write: (value: string) => Promise<void>,
+    ): SettingDefinition {
+        return {
+            name,
+            desc,
+            render: (setting) => {
+                setting.addText(text => {
+                    text
+                        .setPlaceholder(name)
+                        .setValue(read())
+                        .onChange(async (value) => {
+                            await write(value.trim());
+                        });
+                    text.inputEl.type = 'password';
+                });
+            },
+        };
+    }
 }

@@ -10,11 +10,21 @@
  * First written for plugin 0.5.2 (#1456); this version also renders the
  * Connect button and presses the controls rather than only listing them.
  *
+ * Since 0.6.1 the tab is setting definitions (Obsidian 1.13), and the test
+ * renders it as Obsidian does: `update()` builds the definitions and the mock
+ * draws them (src/__mocks__/obsidian.ts), so a click that redraws really
+ * draws the next state.
+ *
  * Sabotage-checked (2026-10-18), each alone then restored:
  * - drop renderPairingSetting from renderUnverifiedState → the unverified test RED;
  * - Test connection not re-rendering on a dead session → the 401 test RED;
  * - Disconnect not calling plugin.logout → the disconnect test RED;
  * - Connect not calling plugin.startOneClickConnect → the one-click test RED.
+ *
+ * Re-checked on the definitions (2026-10-19), each alone then restored:
+ * - the unverified state without the pairing rows → the unverified test RED;
+ * - Test connection not redrawing on a dead session → the 401 test RED;
+ * - Disconnect without setDestructive() → the disconnect test RED.
  */
 import { Setting } from 'obsidian';
 import { PensioSettingTab } from '../settings';
@@ -22,33 +32,18 @@ import PensioPlugin from '../main';
 
 type FakeSetting = {
     name: string;
-    buttons: { text: string; click: (() => unknown) | null }[];
+    group: string | undefined;
+    buttons: { text: string; destructive: boolean; click: (() => unknown) | null }[];
 };
 
 const rendered = (): FakeSetting[] => (Setting as unknown as { rendered: FakeSetting[] }).rendered;
-/** The names in the Connection section of the most recent render. */
-const names = (): string[] => {
-    const all = rendered().map(s => s.name);
-    const start = all.lastIndexOf('Connection');
-    const end = all.indexOf('Sync folders', start);
-    return all.slice(start + 1, end);
-};
+/** The names in the Connection group of the most recent render. */
+const names = (): string[] => rendered().filter(s => s.group === 'Connection').map(s => s.name);
 const settingNamed = (name: string): FakeSetting => {
-    const found = rendered().find(s => s.name === name);
+    const found = rendered().find(s => s.group === 'Connection' && s.name === name);
     if (!found) throw new Error(`no setting named ${name}; rendered: ${names().join(', ')}`);
     return found;
 };
-
-/** An element whose every method returns another element. */
-function fakeEl(): HTMLElement {
-    const el: Record<string, unknown> = {};
-    return new Proxy(el, {
-        get: (target, prop) => {
-            if (prop in target) return target[prop as string];
-            return () => fakeEl();
-        },
-    }) as unknown as HTMLElement;
-}
 
 interface FakePluginState {
     tokens: boolean;
@@ -82,12 +77,11 @@ function makePlugin(state: FakePluginState) {
     return plugin;
 }
 
+/** Renders the tab the way Obsidian does: build the definitions, draw them. */
 function render(state: FakePluginState) {
-    rendered().length = 0;
     const plugin = makePlugin(state);
     const tab = new PensioSettingTab({} as never, plugin as unknown as PensioPlugin);
-    (tab as unknown as { containerEl: HTMLElement }).containerEl = fakeEl();
-    tab.display();
+    tab.update();
     return { tab, plugin };
 }
 
@@ -133,7 +127,9 @@ describe('the connection section', () => {
         const state = { tokens: true, account: { email: 'her@example.com' }, invalidated: false };
         const { plugin } = render(state);
 
-        await settingNamed('Disconnect').buttons[0].click?.();
+        const disconnect = settingNamed('Disconnect').buttons[0];
+        expect(disconnect.destructive).toBe(true);
+        await disconnect.click?.();
 
         expect(plugin.logout).toHaveBeenCalled();
         expect(names()).toEqual(expect.arrayContaining(['Connect to Pensio', 'Setup code']));

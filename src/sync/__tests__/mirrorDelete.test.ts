@@ -1,5 +1,6 @@
 import { EntryResponse, PensioSettings, PersonResponse } from '../../types';
 import { SyncEngine } from '../engine';
+import { FakeFile, fakeVault } from './fakeVault';
 
 // Mock obsidian module
 jest.mock('obsidian');
@@ -9,6 +10,7 @@ describe('Mirror Delete Safety', () => {
     let mockApiClient: any;
     let mockApp: any;
     let settings: PensioSettings;
+    let localFiles: FakeFile[];
 
     const makeEntry = (overrides: Partial<EntryResponse> = {}): EntryResponse => ({
         id: 'entry-1',
@@ -72,15 +74,9 @@ describe('Mirror Delete Safety', () => {
             debugMode: false,
         };
 
-        // Mock vault with getMarkdownFiles returning empty (no local files)
-        mockApp = {
-            vault: {
-                getMarkdownFiles: jest.fn().mockReturnValue([]),
-                on: jest.fn(),
-                off: jest.fn(),
-                read: jest.fn(),
-            },
-        };
+        // A vault with no local files until a test adds one
+        localFiles = [];
+        mockApp = { vault: fakeVault(() => localFiles) };
 
         engine = new SyncEngine(mockApp, settings, mockApiClient);
     });
@@ -100,8 +96,7 @@ describe('Mirror Delete Safety', () => {
         const entry = makeEntry({ id: 'e1', file_path: 'Journal/exists.md', source: 'obsidian_plugin' });
         mockApiClient.listEntries.mockResolvedValue([entry]);
 
-        const localFile = { path: 'Journal/exists.md', name: 'exists.md', basename: 'exists', extension: 'md', stat: { mtime: 0, ctime: 0, size: 10 } };
-        mockApp.vault.getMarkdownFiles.mockReturnValue([localFile]);
+        localFiles = [{ path: 'Journal/exists.md' }];
         mockApp.vault.read.mockResolvedValue('hello');
 
         await engine.syncAll(false);
@@ -154,8 +149,7 @@ describe('Mirror Delete Safety', () => {
         const person = makePerson({ id: 'p1', person_note_path: 'People/Alice.md', source: 'obsidian_plugin' });
         mockApiClient.listPeople.mockResolvedValue([person]);
 
-        const localFile = { path: 'People/Alice.md', name: 'Alice.md', basename: 'Alice', extension: 'md', stat: { mtime: 0, ctime: 0, size: 10 } };
-        mockApp.vault.getMarkdownFiles.mockReturnValue([localFile]);
+        localFiles = [{ path: 'People/Alice.md' }];
         mockApp.vault.read.mockResolvedValue('hello');
 
         await engine.syncAll(false);

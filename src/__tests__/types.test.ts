@@ -62,7 +62,6 @@ describe('API Request Types', () => {
     it('CreatePersonRequest should have all required fields', () => {
         const person: CreatePersonRequest = {
             name: 'Alice Johnson',
-            aliases: ['Alice', 'AJ'],
             person_note_path: 'People/Alice Johnson.md',
             relationship: 'friend',
             birthday: '1990-05-15',
@@ -73,8 +72,28 @@ describe('API Request Types', () => {
         };
 
         expect(person.name).toBe('Alice Johnson');
-        expect(person.aliases).toContain('Alice');
         expect(person.tags).toContain('work');
+    });
+
+    it('CreatePersonRequest carries no aliases field at all', () => {
+        // The backend owns aliases, parsed from the note's own frontmatter. A
+        // request that could state them could also empty them — which is what
+        // the hardcoded `aliases: []` the sync engine used to send did to
+        // aliases set in the web UI.
+        const person: CreatePersonRequest = {
+            name: 'Alice Johnson',
+            person_note_path: 'People/Alice Johnson.md',
+            relationship: '',
+            birthday: null,
+            tags: [],
+            from_locations: [],
+            lived_in: [],
+            metadata: {}
+        };
+
+        expect('aliases' in person).toBe(false);
+        // @ts-expect-error — aliases is not part of the request contract
+        expect(person.aliases).toBeUndefined();
     });
 });
 

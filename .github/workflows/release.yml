@@ -12,6 +12,15 @@ name: Release Obsidian plugin
 # the community directory offers whatever version main's manifest.json names,
 # so a beta that reached main would update every installed plugin. A
 # pre-release is never "Latest", and BRAT can install it by its tag.
+#
+# ⭐ The release notes are that version's section of CHANGELOG.md (a beta
+# without its own section uses its base version's). A release with no section
+# is refused, not published blank: the Community plugin review reports a
+# release with no description.
+#
+# ⭐ main.js, manifest.json and styles.css carry a build provenance attestation
+# (actions/attest), so anyone can check a downloaded file was built here, from
+# this commit:  gh attestation verify main.js --repo gabrielrubens/pensio-obsidian-sync
 
 on:
   push:
@@ -28,6 +37,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # actions/attest: mint the OIDC token for the signing certificate, and
+      # store the attestation.
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@v4
 
@@ -51,10 +65,37 @@ jobs:
             exit 1
           fi
 
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          section() {
+            awk -v v="$1" '/^## / { if (found) exit; if ($2 == v) { found = 1; next } } found' CHANGELOG.md
+          }
+          section "$VERSION" > release-notes.md
+          if [ ! -s release-notes.md ] && [ "${VERSION%%-*}" != "$VERSION" ]; then
+            section "${VERSION%%-*}" > release-notes.md
+          fi
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "::error::CHANGELOG.md has no section for $VERSION (a heading '## $VERSION')"
+            exit 1
+          fi
+          cat release-notes.md
+
+      # npm ci, never npm install: the build must use the lockfile exactly, or
+      # the review's byte-for-byte rebuild of main.js stops matching.
       - name: Build plugin
         run: |
-          npm install
+          npm ci
           npm run build
+
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
 
       - name: Create release
         env:
@@ -66,6 +107,7 @@ jobs:
             case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
             gh release create "$VERSION" \
               --title="$VERSION" \
+              --notes-file=release-notes.md \
               --target="$GITHUB_SHA" \
               $prerelease \
               main.js manifest.json styles.css
@@ -74,6 +116,7 @@ jobs:
 
             gh release create "$tag" \
               --title="$tag" \
+              --notes-file=release-notes.md \
               --draft \
               main.js manifest.json styles.css
           fi
