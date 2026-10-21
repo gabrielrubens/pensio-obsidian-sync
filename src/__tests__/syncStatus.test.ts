@@ -11,7 +11,8 @@
  * - SyncStatus.failed telling on every automatic failure (no first-of-streak)
  *   → "says so once" RED;
  * - offline no longer exempt → "tells only the status bar" RED;
- * - recovered() not hiding the notice → "takes the notice away" RED;
+ * - recovered() (synced(true) since 0.7.3) not hiding the notice → "takes
+ *   the notice away" RED;
  * - the periodic sync's catch not calling onSyncFailed → "an automatic sync
  *   reports" RED;
  * - syncAll throwing a plain Error instead of SyncFailure → "end to end" RED;
@@ -19,6 +20,17 @@
  *
  * Re-checked on 0.7.1 (2026-10-20): the busy kind drawn as "sync failed" →
  * "a rate limit reads busy" RED.
+ *
+ * 0.7.3 (2026-10-21, review CRIT-4), each alone then restored:
+ * - synced() emitting only when it cleared a problem (as recovered() did) →
+ *   "draws the card again … even one that sent nothing" RED;
+ * - explain() without the too-large sentences → "never says nothing is
+ *   waiting" RED.
+ * - "an automatic sync reports how it ended" now gives up in real time, not
+ *   after 200 turns (it failed on CI, run 39581404184). Reproduced: with the
+ *   note's read slowed by 400 turns, the 200-turn wait goes RED ("expected 1
+ *   call, received 0") and the real-time one passes. Re-checked: the periodic
+ *   sync's catch not calling onSyncFailed → that test RED.
  *
  * ⚠️ That last one was found by sabotage, not review: making the status card
  * redraw the tab on every change ran Node out of memory, because the redrawn
@@ -50,13 +62,14 @@ function statusBar() {
     return bar;
 }
 
-function makeStatus(state = { invalid: false }) {
+function makeStatus(state = { invalid: false }, tooLarge: string[] = []) {
     const bar = statusBar();
     const status = new SyncStatus({
         statusBar: () => bar as unknown as HTMLElement,
         isAuthInvalidated: () => state.invalid,
         trackedCount: () => 412,
         failureContext: () => ({ apiUrl: 'https://pensio.app', retries: true }),
+        tooLarge: () => tooLarge,
     });
     return { status, bar, state };
 }
@@ -97,7 +110,7 @@ describe('the sync status', () => {
         status.failed(serverDown(), { asked: false });
         const notice = lastNotice();
 
-        status.recovered();
+        status.synced(true);
 
         expect(notice.hide).toHaveBeenCalled();
         expect(status.getProblem()).toBeNull();
@@ -158,7 +171,7 @@ describe('the sync status', () => {
         const stop = status.onChange(heard);
 
         status.failed(offline(), { asked: false });
-        status.recovered();
+        status.synced(true);
         stop();
         status.failed(offline(), { asked: false });
 
@@ -178,8 +191,30 @@ describe('the sync status', () => {
         status.failed(offline(), { asked: false });
         expect(newcomer).not.toHaveBeenCalled();
 
-        status.recovered();
+        status.synced(true);
         expect(newcomer).toHaveBeenCalledTimes(1);
+    });
+
+    it('draws the card again after a sync that worked, even one that sent nothing (0.7.3)', () => {
+        // A note found too large by a sync with nothing to send: the card's
+        // line about it comes from that sync.
+        const { status } = makeStatus();
+        const heard = jest.fn();
+        status.onChange(heard);
+
+        status.synced(false);
+
+        expect(heard).toHaveBeenCalledTimes(1);
+    });
+
+    it('never says nothing is waiting while a note is too large to sync (0.7.3)', () => {
+        const { status } = makeStatus({ invalid: false }, ['Journal/Long note.md']);
+
+        status.explain();
+
+        expect(shown()).toEqual([
+            'Pensio: 412 notes synced. 1 note is too large to sync: Long note. Split it into smaller notes to sync it.',
+        ]);
     });
 });
 
@@ -220,9 +255,17 @@ describe('the sync engine', () => {
     it('an automatic sync reports how it ended', async () => {
         // setImmediate stays real: hashing a note finishes on real I/O, which
         // fake timers do not wait for, so each sync is waited for by hand.
-        jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+        // ⛔ Not a number of turns that happens to be enough here: 200 was,
+        // locally, and on CI's slower runner the startup sync was still
+        // running when the five-minute one came due, which then skipped (a
+        // sync already in progress), so the test saw one failure, not two
+        // (#1522, run 39581404184). A sync waits on real I/O, so the give-up
+        // point is in real time (`performance` stays real for it). It returns
+        // the moment `done` holds; it is not a sleep.
+        jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'performance'] });
         const until = async (done: () => boolean) => {
-            for (let i = 0; i < 200 && !done(); i++) await new Promise(resolve => setImmediate(resolve));
+            const start = performance.now();
+            while (!done() && performance.now() - start < 2000) await new Promise(resolve => setImmediate(resolve));
         };
         try {
             const engine = engineWhoseUploadFails(serverDown());
@@ -233,6 +276,7 @@ describe('the sync engine', () => {
             engine.startAutoSync();
             await jest.advanceTimersByTimeAsync(6000);
             await until(() => failed.mock.calls.length === 1);
+            expect(failed).toHaveBeenCalledTimes(1);    // the startup sync ended first
             await jest.advanceTimersByTimeAsync(5 * 60 * 1000);
             await until(() => failed.mock.calls.length === 2);
 

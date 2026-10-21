@@ -7,6 +7,13 @@ workflow publishes the section whose heading names the version, and refuses to
 publish a release without one. Releases before 0.5.0 are on
 [GitHub](https://github.com/gabrielrubens/pensio-obsidian-sync/releases).
 
+## 0.7.3
+
+- **Vaults with many long notes finish syncing.** The plugin sent notes fifty at a time whatever their size, so a group of long notes made a request bigger than Pensio takes, and the sync stopped there every time. It now sends as much as Pensio takes in one go, and less again if a server says it is too much.
+- **One note too large to sync no longer stops the vault.** A very large note (more than about 1 MB of text) turned the card to *Not syncing*, although every other note synced. Now the card stays *Connected* and names the note on a line of its own: *1 note is too large to sync*. Split it into smaller notes and it syncs. The plugin does not read it again until you edit it.
+- **Sync now and the status bar name it too.** Clicking the status bar no longer says "Nothing is waiting" while a note is.
+- **Moving a folder of long notes** goes the same way.
+
 ## 0.7.2
 
 - **Mirror delete only removes what this vault synced.** It used to remove every Obsidian entry on your account that this vault did not have, so with two vaults on one account (a work vault, a test vault, a phone with other folders), Mirror delete in one deleted the other's entries. Now it removes the entry of a note this vault synced and no longer has, and nothing else. It also no longer reads through your whole account to do it, so it asks Pensio nothing when nothing is gone.

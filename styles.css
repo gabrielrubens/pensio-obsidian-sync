@@ -81,6 +81,12 @@
     color: var(--color-orange);
 }
 
+/* A line about some notes ("1 note is too large to sync"): the vault still syncs */
+.pensio-card-warning {
+    margin-top: var(--size-2-1);
+    color: var(--text-warning);
+}
+
 /* Not connected: the accent outline points at Connect to Pensio */
 .setting-item.pensio-tone-off {
     border-color: hsla(var(--interactive-accent-hsl), 0.55);

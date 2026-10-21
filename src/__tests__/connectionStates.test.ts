@@ -110,6 +110,7 @@ function makePlugin(state: FakePluginState, verify?: (options: { onError?: (e: u
             getLastProcessingStatus: () => null,
             getTrackedFileCount: () => 0,
             getLastSyncTime: () => null,
+            getTooLargeNotes: () => [] as string[],
         },
         syncStatus: null as unknown as SyncStatus,
         accountCheck: null as unknown as AccountCheck,

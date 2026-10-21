@@ -10,6 +10,7 @@ import { clearNotice, explainFailure, FailureContext, NOTICE_MS, notify, notifyF
 import { PensioSettingTab } from './settings';
 import { SyncEngine } from './sync/engine';
 import { quotaDayKey, quotaNoticeMessage, quotaSummaryLine, shouldNotifyQuota } from './sync/quotaNotice';
+import { tooLargeLine } from './sync/tooLarge';
 import { SyncStatus } from './syncStatus';
 import { DEFAULT_SETTINGS, JournalFolderMapping, PensioSettings, ProcessingStatus, SyncStateData } from './types';
 
@@ -191,8 +192,8 @@ export default class PensioPlugin extends Plugin {
 
     /** A sync ended with nothing failing; `contacted`: Pensio answered it. */
     private onSyncReachedPensio(contacted: boolean): void {
+        this.syncStatus.synced(contacted);
         if (!contacted) return;
-        this.syncStatus.recovered();
         // Pensio answers again: an account nobody could check gets checked now.
         if (!this.accountGuard.getAccount()) void this.accountCheck.run();
     }
@@ -382,10 +383,14 @@ export default class PensioPlugin extends Plugin {
             if (options.file) this.syncEngine.markDirty(options.file.path);
             const result = await this.syncEngine.syncAll(options.force ?? false, { asked: true });
             this.syncStatus.succeeded(`${result.synced} synced`);
-            if (options.file) {
+            const tooLarge = tooLargeLine(result.tooLarge);
+            if (options.file && result.tooLarge.includes(options.file.path)) {
+                notify(`${options.file.name} is too large to sync. Split it into smaller notes to sync it.`);
+            } else if (options.file) {
                 notify(result.synced > 0 ? `${options.file.name} synced.` : `${options.file.name} was already up to date.`);
             } else {
-                notify(`${options.force ? 'Full sync' : 'Sync'} done. ${result.synced} synced, ${result.skipped} unchanged.`);
+                notify(`${options.force ? 'Full sync' : 'Sync'} done. ${result.synced} synced, ${result.skipped} unchanged.` +
+                    (tooLarge ? ` ${tooLarge}.` : ''));
             }
         } catch (error) {
             this.syncStatus.failed(error, { asked: true });
@@ -415,6 +420,7 @@ export default class PensioPlugin extends Plugin {
             statusBar: () => this.statusBarItem ?? null,
             isAuthInvalidated: () => this.apiClient?.isAuthInvalidated() ?? false,
             trackedCount: () => this.syncEngine?.getTrackedFileCount() ?? 0,
+            tooLarge: () => this.syncEngine?.getTooLargeNotes() ?? [],
             failureContext: () => this.syncFailureContext(),
         });
     }

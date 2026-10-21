@@ -213,6 +213,13 @@ export interface SyncStateData {
      * Absent on state written before this field existed.
      */
     lastQuotaNoticeDay?: string | null;
+    /**
+     * Notes too large to sync, by path, with the modification time they had
+     * when found (plugin 0.7.3, `sync/tooLarge.ts`), so a reload neither reads
+     * them again nor loses the card's line about them. Absent on state written
+     * before this field existed.
+     */
+    tooLarge?: Record<string, { mtime: number; bytes: number }>;
 }
 
 /**

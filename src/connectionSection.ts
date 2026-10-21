@@ -233,6 +233,7 @@ export class ConnectionSection {
             checking: check?.checking ?? false,
             checkProblem: check?.problem ?? null,
             unchecked: check?.unchecked(),
+            tooLarge: this.plugin.syncEngine.getTooLargeNotes(),
             now: Date.now(),
         });
     }
@@ -249,6 +250,7 @@ export class ConnectionSection {
         const desc = setting.descEl;
         desc.empty();
         if (view.detail) desc.appendText(view.detail);
+        if (view.warning) desc.createDiv({ text: view.warning, cls: 'pensio-card-warning' });
         if (view.signUp) {
             desc.appendText(`${view.detail ? ' ' : ''}No account? `);
             const signUp = desc.createEl('a', { text: 'Create one free', href: `${this.apiUrl()}/register/` });

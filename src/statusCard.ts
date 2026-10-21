@@ -1,4 +1,5 @@
 import { Explanation } from './notices';
+import { tooLargeLine } from './sync/tooLarge';
 import { SyncProblem } from './syncStatus';
 
 export type ConnectionState = 'connected' | 'unverified' | 'reconnect' | 'disconnected';
@@ -25,6 +26,8 @@ export interface CardFacts {
     checkProblem: Explanation | null;
     /** No check has run for these tokens yet. */
     unchecked?: boolean;
+    /** Notes too large to sync, by path (sync/tooLarge.ts). */
+    tooLarge?: string[];
     now: number;
 }
 
@@ -38,6 +41,11 @@ export interface CardView {
     signUp: boolean;
     /** The buttons, the main one first. */
     actions: CardAction[];
+    /**
+     * A line under the detail about some notes, not the connection: "1 note
+     * is too large to sync: …". Absent when there is nothing to say.
+     */
+    warning?: string;
 }
 
 /** A passing problem: trying again may work, so Try again comes first. */
@@ -101,11 +109,15 @@ export function cardView(f: CardFacts): CardView {
                 detail: 'Tokens are saved. This takes a second.', signUp: false, actions: [],
             };
         case 'connected': {
+            // ⭐ A note too large to sync is a line about that note: the vault
+            // is still syncing, so the card still says Connected (CRIT-4).
+            const warning = tooLargeLine(f.tooLarge ?? []);
+            const notes = warning ? { warning } : {};
             if (f.problem) {
                 return {
                     tone: 'warn', icon: 'alert-triangle', title: 'Not syncing',
                     detail: `${f.problem.explanation.reason} Last tried ${timeAgo(f.problem.at, f.now)}.`,
-                    signUp: false, actions: ['sync'],
+                    signUp: false, actions: ['sync'], ...notes,
                 };
             }
             const parts = [
@@ -113,7 +125,10 @@ export function cardView(f: CardFacts): CardView {
                 `${f.tracked} ${f.tracked === 1 ? 'note' : 'notes'}`,
                 f.lastSync ? `synced ${timeAgo(f.lastSync, f.now)}` : 'not synced yet',
             ].filter(Boolean);
-            return { tone: 'ok', icon: 'check', title: 'Connected', detail: parts.join(' · '), signUp: false, actions: ['sync'] };
+            return {
+                tone: 'ok', icon: 'check', title: 'Connected', detail: parts.join(' · '), signUp: false,
+                actions: ['sync'], ...notes,
+            };
         }
     }
 }

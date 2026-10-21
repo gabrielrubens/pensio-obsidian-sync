@@ -21,6 +21,12 @@
  *   Pensio beside Try again" RED;
  * - a checked-but-unknown state drawn as the spinner → "never spins once
  *   checked" RED.
+ * 0.7.3 (2026-10-21, review CRIT-4), each alone then restored:
+ * - the Connected card without its `warning` → "a line under a card that
+ *   still says Connected" RED;
+ * - tooLargeLine counting the shown names instead of the rest ("and 4 more")
+ *   → "names two notes, and counts the rest" RED;
+ * - the warning set to '' when no note is too large → "is not drawn" RED.
  */
 import { HttpError } from '../errors';
 import { explainFailure } from '../notices';
@@ -112,6 +118,28 @@ describe('the status card', () => {
             expect(cardSearchName(state)).toBe('Connect to Pensio');
         }
         expect(cardSearchName('connected')).toBe('Connection');
+    });
+});
+
+describe('a note too large to sync (0.7.3)', () => {
+    it('is a line under a card that still says Connected', () => {
+        expect(cardView(facts({ tooLarge: ['Journal/Long note.md'] }))).toEqual({
+            tone: 'ok', icon: 'check', title: 'Connected',
+            detail: 'gabriel@example.com · 412 notes · synced 3 min ago',
+            warning: '1 note is too large to sync: Long note',
+            signUp: false, actions: ['sync'],
+        });
+    });
+
+    it('names two notes, and counts the rest', () => {
+        expect(cardView(facts({ tooLarge: ['A/One.md', 'A/Two.md'] })).warning)
+            .toBe('2 notes are too large to sync: One, Two');
+        expect(cardView(facts({ tooLarge: ['A/One.md', 'A/Two.md', 'B/Three.md', 'B/Four.md'] })).warning)
+            .toBe('4 notes are too large to sync: One, Two and 2 more');
+    });
+
+    it('is not drawn when every note fits', () => {
+        expect(cardView(facts({ tooLarge: [] })).warning).toBeUndefined();
     });
 });
 

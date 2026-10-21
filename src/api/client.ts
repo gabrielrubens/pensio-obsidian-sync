@@ -3,6 +3,7 @@ import { RefreshError, TokenManager } from '../auth/tokenManager';
 import { refusal } from '../errors';
 import { serverUrl } from '../apiUrl';
 import { debugLog } from '../logger';
+import { bulkPayload } from '../sync/chunks';
 import {
     BulkSyncItem,
     BulkSyncResponse,
@@ -203,10 +204,12 @@ export class ApiClient {
         entries: BulkSyncItem[] = [],
         people: BulkSyncItem[] = []
     ): Promise<BulkSyncResponse> {
+        // Shaped in one place, so the request sizes the sync measures are
+        // the bytes sent (sync/chunks.ts).
         return await this.request<BulkSyncResponse>(
             'POST',
             '/api/v1/sync/bulk/',
-            { entries, people }
+            bulkPayload(entries, people)
         );
     }
 

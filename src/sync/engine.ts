@@ -3,10 +3,12 @@ import { ApiClient } from '../api/client';
 import { RefreshError } from '../auth/tokenManager';
 import { SyncFailure } from '../errors';
 import { debugLog } from '../logger';
-import { BulkSyncItem, CreateEntryRequest, CreatePersonRequest, PensioSettings, ProcessingStatus, SyncedFileInfo, SyncStateData } from '../types';
+import { BulkSyncItem, BulkSyncResponse, CreateEntryRequest, CreatePersonRequest, PensioSettings, ProcessingStatus, SyncedFileInfo, SyncStateData } from '../types';
+import { itemBytes, Section, sendInChunks, tooLargeAlone } from './chunks';
 import { computeContentHash } from './hash';
 import { deleteItems, goneNotes, MIRROR_CHUNK, mirrorSkip } from './mirror';
 import { extractDateFromFilename, ParsedMarkdown, parseMarkdown } from './parser';
+import { TooLargeNotes } from './tooLarge';
 
 /**
  * Sync engine — watches vault files and syncs to Pensio via bulk API.
@@ -22,6 +24,8 @@ export interface SyncResult {
     errors: number;
     total: number;
     contacted: boolean;
+    /** The notes too large to sync, after this sync (`tooLarge.ts`). Not errors. */
+    tooLarge: string[];
 }
 
 export class SyncEngine {
@@ -56,7 +60,8 @@ export class SyncEngine {
      */
     private readonly MIRROR_INTERVAL_MS = 60 * 60 * 1000;
     private lastMirrorAt = 0;
-    private readonly MAX_ENTRY_SIZE_MB = 1;
+    /** Notes whose own request is more than Pensio takes (sync/chunks.ts). */
+    private tooLarge = new TooLargeNotes();
     private readonly SYNC_INTERVAL_MS = 5 * 60 * 1000;
     private readonly INITIAL_SYNC_DELAY_MS = 5000;
     private readonly STATE_SAVE_DEBOUNCE_MS = 5000;
@@ -401,13 +406,13 @@ export class SyncEngine {
             if (!(file instanceof TFile)) continue; // moved again or gone before this ran
             try {
                 const content = await this.app.vault.read(file);
-                if (new Blob([content]).size / (1024 * 1024) > this.MAX_ENTRY_SIZE_MB) {
-                    this.dirtyFiles.add(to); // the loop reports it as too large
-                    continue;
-                }
                 const hash = await computeContentHash(content);
                 const built = this.buildData(file, parseMarkdown(content));
                 const item: BulkSyncItem = { action: 'rename', file_path: from, new_file_path: to, data: built.data };
+                if (tooLargeAlone(itemBytes(item))) {
+                    this.moveNotSent(from, to); // the loop finds it too large, and says so
+                    continue;
+                }
                 (built.kind === 'person' ? peopleItems : entryItems).push(item);
                 sent.set(from, { file, hash });
             } catch (error) {
@@ -416,43 +421,73 @@ export class SyncEngine {
             }
         }
 
-        const send = async (items: BulkSyncItem[], people: boolean): Promise<void> => {
-            if (items.length === 0) return;
-            let result;
+        // ⛔ Before 0.7.3 every move went in ONE request: moving a folder of
+        // long notes made a body Pensio refuses, and the moves were queued
+        // again, to fail the same way every sync (review CRIT-4).
+        const send = async (items: BulkSyncItem[], section: Section): Promise<void> => {
+            const done = new Set<BulkSyncItem>();
             try {
-                result = people
-                    ? await this.reached(this.apiClient.bulkSync([], items))
-                    : await this.reached(this.apiClient.bulkSync(items, []));
+                await sendInChunks(items, {
+                    post: chunk => this.reached(section === 'people'
+                        ? this.apiClient.bulkSync([], chunk) : this.apiClient.bulkSync(chunk, [])),
+                    answered: (chunk, result) => {
+                        chunk.forEach(item => done.add(item));
+                        this.renamesAnswered(chunk, result, section, sent);
+                    },
+                    refused: item => {
+                        done.add(item);
+                        if (item.new_file_path) this.moveNotSent(item.file_path, item.new_file_path);
+                    },
+                });
             } catch (error) {
                 console.error('Bulk rename failed:', error);
                 for (const item of items) {
-                    if (item.new_file_path) this.pendingRenames.set(item.file_path, item.new_file_path);
-                }
-                return;
-            }
-            this.captureProcessingStatus(result.processing_status);
-            const section = people ? result.people : result.entries;
-            const refused = new Set(section.errors.map((err: { file_path: string }) => err.file_path));
-            const canRename = result.capabilities?.rename === true;
-            for (const item of items) {
-                const info = sent.get(item.file_path);
-                if (!info) continue;
-                const failed = refused.has(item.file_path) ||
-                    (item.new_file_path !== undefined && refused.has(item.new_file_path));
-                if (!failed) {
-                    this.updateFileTracking(info.file, info.hash);
-                    continue;
-                }
-                this.removeFileTracking(info.file.path);
-                this.dirtyFiles.add(info.file.path);
-                if (!canRename) {
-                    this.pendingDeletes.add(item.file_path);
+                    if (!done.has(item) && item.new_file_path) this.pendingRenames.set(item.file_path, item.new_file_path);
                 }
             }
         };
 
-        await send(entryItems, false);
-        await send(peopleItems, true);
+        await send(entryItems, 'entries');
+        await send(peopleItems, 'people');
+    }
+
+    /**
+     * A move that will not be sent: the note is too large to sync where it is
+     * now (sync/tooLarge.ts). Pensio still has its entry at `from`, so the
+     * history says `from` (0.7.2: the history names the path Pensio has, which
+     * is what lets mirror delete find it), and the loop finds the note at `to`
+     * too large and says so.
+     */
+    private moveNotSent(from: string, to: string): void {
+        const tracked = this.syncedFiles.get(to);
+        this.syncedFiles.delete(to);
+        if (tracked) this.syncedFiles.set(from, tracked);
+        this.dirtyFiles.add(to);
+    }
+
+    /** What Pensio did with one request of moves (see processRenames). */
+    private renamesAnswered(
+        items: BulkSyncItem[], result: BulkSyncResponse, section: Section,
+        sent: Map<string, { file: TFile; hash: string }>,
+    ): void {
+        this.captureProcessingStatus(result.processing_status);
+        const refused = new Set(result[section].errors.map((err: { file_path: string }) => err.file_path));
+        const canRename = result.capabilities?.rename === true;
+        for (const item of items) {
+            const info = sent.get(item.file_path);
+            if (!info) continue;
+            const failed = refused.has(item.file_path) ||
+                (item.new_file_path !== undefined && refused.has(item.new_file_path));
+            if (!failed) {
+                this.updateFileTracking(info.file, info.hash);
+                continue;
+            }
+            this.removeFileTracking(info.file.path);
+            this.dirtyFiles.add(info.file.path);
+            if (!canRename) {
+                this.pendingDeletes.add(item.file_path);
+            }
+        }
     }
 
     /**
@@ -594,6 +629,7 @@ export class SyncEngine {
             restored.set(path, { mtime: info.mtime, hash: info.hash });
         }
         this.syncedFiles = restored;
+        this.tooLarge.restore(state.tooLarge);
         debugLog(
             `Restored sync state: ${this.syncedFiles.size} tracked files, ` +
             `userId=${this.userId || 'none'}, ` +
@@ -610,6 +646,11 @@ export class SyncEngine {
         return this.lastSyncTime;
     }
 
+    /** The notes too large to sync, by path (sync/tooLarge.ts). */
+    getTooLargeNotes(): string[] {
+        return this.tooLarge.paths();
+    }
+
     getState(): SyncStateData {
         const files: Record<string, SyncedFileInfo> = {};
         for (const [path, info] of this.syncedFiles) {
@@ -620,6 +661,7 @@ export class SyncEngine {
             lastSyncTime: this.lastSyncTime,
             files,
             lastQuotaNoticeDay: this.lastQuotaNoticeDay,
+            tooLarge: this.tooLarge.toState(),
         };
     }
 
@@ -628,6 +670,7 @@ export class SyncEngine {
         this.userId = null;
         this.lastSyncTime = null;
         this.syncedFiles.clear();
+        this.tooLarge.clear();
         // A different account has a different tier and quota — the previous
         // account's "already told them today" must not silence the new one.
         this.lastProcessingStatus = null;
@@ -732,6 +775,7 @@ export class SyncEngine {
     private async runSync(forceSync: boolean, asked: boolean): Promise<SyncResult> {
         this.isSyncing = true;
         this.contacted = false;
+        this.tooLarge.begin();
 
         try {
             debugLog(forceSync
@@ -773,6 +817,8 @@ export class SyncEngine {
                             continue;
                         }
                     }
+                    // Too large when last read, and not edited since: still is.
+                    if (this.tooLarge.unchanged(file.path, file.stat.mtime)) continue;
 
                     const content = await this.app.vault.read(file);
                     const hash = await computeContentHash(content);
@@ -785,20 +831,15 @@ export class SyncEngine {
                         continue;
                     }
 
-                    const parsed = parseMarkdown(content);
-
-                    const sizeMB = new Blob([content]).size / (1024 * 1024);
-                    if (sizeMB > this.MAX_ENTRY_SIZE_MB) {
-                        errors.push(`${file.path}: File too large (${sizeMB.toFixed(2)}MB)`);
+                    const built = this.buildData(file, parseMarkdown(content));
+                    const item: BulkSyncItem = { action: 'create', file_path: file.path, data: built.data };
+                    // ⭐ A warning about this note, not a failed sync (review CRIT-4).
+                    const bytes = itemBytes(item);
+                    if (tooLargeAlone(bytes)) {
+                        this.tooLarge.add(file.path, file.stat.mtime, bytes);
                         continue;
                     }
-
-                    const built = this.buildData(file, parsed);
-                    (built.kind === 'person' ? peopleItems : entryItems).push({
-                        action: 'create',
-                        file_path: file.path,
-                        data: built.data,
-                    });
+                    (built.kind === 'person' ? peopleItems : entryItems).push(item);
 
                     trackingDeferred.set(file.path, { file, hash });
                 } catch (error) {
@@ -815,80 +856,50 @@ export class SyncEngine {
             }
             debugLog(`Syncing ${entryItems.length} entries + ${peopleItems.length} people`);
 
-            // Send entries in chunks
-            const BULK_CHUNK_SIZE = 50;
-
-            // ⛔ The first chunk that fails outright (offline, a 429, a dead
-            // session, a server error) ends the sync: every later chunk would
+            // ⛔ The first request that fails outright (offline, a 429, a dead
+            // session, a server error) ends the sync: every later one would
             // fail the same way, and each one cost a request and a token
             // refresh, about 39 refreshes a run for a 600-note first sync,
             // every 5 minutes, into the very limit that refused it (review F20).
+            // ⭐ Requests are sized in bytes, not notes (sync/chunks.ts).
             let halted = false;
-            for (let i = 0; i < entryItems.length && !halted; i += BULK_CHUNK_SIZE) {
-                const chunk = entryItems.slice(i, i + BULK_CHUNK_SIZE);
+            const sections: [Section, BulkSyncItem[]][] = [['entries', entryItems], ['people', peopleItems]];
+            for (const [section, items] of sections) {
+                if (halted) break;
                 try {
-                    const result = await this.reached(this.apiClient.bulkSync(chunk, []));
-                    this.captureProcessingStatus(result.processing_status);
-                    debugLog(`Bulk entries ${i + 1}-${i + chunk.length}: ` +
-                        `${result.entries.created} created, ${result.entries.updated} updated`);
-
-                    const errorPaths = new Set(
-                        result.entries.errors.map((err: { file_path: string }) => err.file_path)
-                    );
-                    for (const err of result.entries.errors) {
-                        const errMsg = typeof err.error === 'object'
-                            ? JSON.stringify(err.error) : err.error;
-                        errors.push(`${err.file_path}: ${errMsg}`);
-                    }
-
-                    for (const item of chunk) {
-                        if (!errorPaths.has(item.file_path)) {
-                            const info = trackingDeferred.get(item.file_path);
-                            if (info) {
-                                this.updateFileTracking(info.file, info.hash);
+                    await sendInChunks(items, {
+                        post: chunk => this.reached(section === 'people'
+                            ? this.apiClient.bulkSync([], chunk) : this.apiClient.bulkSync(chunk, [])),
+                        answered: (chunk, result) => {
+                            this.captureProcessingStatus(result.processing_status);
+                            debugLog(`Bulk ${section}: ${chunk.length} sent, ` +
+                                `${result[section].created} created, ${result[section].updated} updated`);
+                            const errorPaths = new Set(result[section].errors.map(err => err.file_path));
+                            for (const err of result[section].errors) {
+                                const errMsg = typeof err.error === 'object' ? JSON.stringify(err.error) : err.error;
+                                errors.push(`${err.file_path}: ${errMsg}`);
                             }
-                        }
-                    }
+                            for (const item of chunk) {
+                                const info = trackingDeferred.get(item.file_path);
+                                if (info && !errorPaths.has(item.file_path)) this.updateFileTracking(info.file, info.hash);
+                            }
+                        },
+                        // The server's own limit is lower than the one the
+                        // plugin knows: this note is too large there.
+                        refused: item => {
+                            const info = trackingDeferred.get(item.file_path);
+                            trackingDeferred.delete(item.file_path);
+                            if (info) this.tooLarge.add(item.file_path, info.file.stat.mtime, itemBytes(item));
+                        },
+                    });
                 } catch (error) {
-                    console.error('Bulk entry sync failed:', error);
+                    console.error(`Bulk ${section} sync failed:`, error);
                     underlying ??= error;
                     halted = true;
                     errors.push(`Bulk sync chunk: ${(error as Error).message || error}`);
                 }
             }
-
-            for (let i = 0; i < peopleItems.length && !halted; i += BULK_CHUNK_SIZE) {
-                const chunk = peopleItems.slice(i, i + BULK_CHUNK_SIZE);
-                try {
-                    const result = await this.reached(this.apiClient.bulkSync([], chunk));
-                    this.captureProcessingStatus(result.processing_status);
-                    debugLog(`Bulk people ${i + 1}-${i + chunk.length}: ` +
-                        `${result.people.created} created, ${result.people.updated} updated`);
-
-                    const errorPaths = new Set(
-                        result.people.errors.map((err: { file_path: string }) => err.file_path)
-                    );
-                    for (const err of result.people.errors) {
-                        const errMsg = typeof err.error === 'object'
-                            ? JSON.stringify(err.error) : err.error;
-                        errors.push(`${err.file_path}: ${errMsg}`);
-                    }
-
-                    for (const item of chunk) {
-                        if (!errorPaths.has(item.file_path)) {
-                            const info = trackingDeferred.get(item.file_path);
-                            if (info) {
-                                this.updateFileTracking(info.file, info.hash);
-                            }
-                        }
-                    }
-                } catch (error) {
-                    console.error('Bulk people sync failed:', error);
-                    underlying ??= error;
-                    halted = true;
-                    errors.push(`Bulk sync chunk: ${(error as Error).message || error}`);
-                }
-            }
+            this.tooLarge.finish();
 
             // Mirror delete
             if (!halted && this.mirrorAllowed(asked, filesToSync)) {
@@ -934,6 +945,7 @@ export class SyncEngine {
             return {
                 synced: syncedCount, skipped: skippedCount, errors: errors.length,
                 total: filesToSync.length, contacted: this.contacted,
+                tooLarge: this.tooLarge.paths(),
             };
         } finally {
             this.isSyncing = false;

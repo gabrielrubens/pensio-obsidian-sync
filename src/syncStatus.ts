@@ -1,5 +1,6 @@
 import { Notice, setIcon, setTooltip } from 'obsidian';
 import { explainFailure, Explanation, FailureContext, failureMessage, notify, NOTICE_MS } from './notices';
+import { tooLargeLine } from './sync/tooLarge';
 
 /** The last sync failed, and this is why. Cleared by the next sync that works. */
 export interface SyncProblem {
@@ -17,6 +18,8 @@ export interface SyncStatusHost {
     trackedCount(): number;
     /** How to word a sync failure: retries is true only while auto-sync runs. */
     failureContext(): FailureContext;
+    /** Notes too large to sync, by path (sync/tooLarge.ts). */
+    tooLarge?(): string[];
 }
 
 const STOPPED_MESSAGE =
@@ -69,10 +72,15 @@ export class SyncStatus {
         this.emit();
     }
 
-    /** Any sync worked: whatever was wrong is not any more. */
-    recovered(): void {
-        if (this.problem === null) return;
-        this.clearProblem();
+    /**
+     * A sync ended with nothing failing. When Pensio answered it
+     * (`contacted`), whatever was wrong is not any more. ⭐ Either way the card
+     * and the status bar are drawn again: what they say about the sync, and
+     * their line about notes too large to sync, came from this one, even when
+     * it sent nothing (0.7.3, CRIT-4).
+     */
+    synced(contacted: boolean): void {
+        if (contacted) this.clearProblem();
         this.idle();
         this.emit();
     }
@@ -123,11 +131,25 @@ export class SyncStatus {
             return;
         }
         const tracked = this.host.trackedCount();
+        const notes = this.tooLargeSentences();
         this.paint(
             'cloud',
             tracked > 0 ? `${tracked} synced` : 'Pensio',
-            tracked > 0 ? `Pensio: ${tracked} notes synced` : 'Pensio Journaling Sync',
+            (tracked > 0 ? `Pensio: ${tracked} notes synced` : 'Pensio Journaling Sync') + (notes ? `. ${notes}` : ''),
         );
+    }
+
+    /**
+     * "1 note is too large to sync: Long note. Split it …", or ''. ⛔ So the
+     * status bar never says "Nothing is waiting" while a note is (CRIT-4).
+     */
+    private tooLargeSentences(): string {
+        const paths = this.host.tooLarge?.() ?? [];
+        const line = tooLargeLine(paths);
+        if (!line) return '';
+        const advice = paths.length === 1
+            ? 'Split it into smaller notes to sync it.' : 'Split them into smaller notes to sync them.';
+        return `${line}. ${advice}`;
     }
 
     /** The status bar was pressed: say what it means, in a notice that stays. */
@@ -139,7 +161,9 @@ export class SyncStatus {
             this.showProblem();
         } else {
             const tracked = this.host.trackedCount();
-            notify(tracked > 0 ? `${tracked} notes synced. Nothing is waiting.` : 'Nothing has synced yet.');
+            const notes = this.tooLargeSentences();
+            const synced = tracked > 0 ? `${tracked} notes synced.` : 'Nothing has synced yet.';
+            notify(notes ? `${synced} ${notes}` : tracked > 0 ? `${synced} Nothing is waiting.` : synced);
         }
     }
 

@@ -120,6 +120,7 @@ function makePlugin(state: PluginState = { tokens: false, account: null }) {
         getLastProcessingStatus: () => null,
         getTrackedFileCount: () => 1,
         getLastSyncTime: () => null,
+        getTooLargeNotes: () => [],
         setUserId: jest.fn(),
     };
     return p;
