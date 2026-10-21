@@ -18,6 +18,7 @@
  * The typed setup code stays as the fallback: an install where obsidian:// is
  * not registered (some Linux packages) never gets the callback.
  */
+import { serverUrl } from '../apiUrl';
 
 /** How long a started connection waits for the browser. Approval may include
  * signing in and finding the second factor; the server's code is minted only
@@ -163,7 +164,7 @@ export class OneClickConnect {
             // comes back to this one rather than the last one in front.
             ...(vault ? { vault } : {}),
         });
-        const base = (apiUrl || 'https://pensio.app').replace(/\/+$/, '').replace('://www.', '://');
+        const base = serverUrl(apiUrl);
         return `${base}/connect/obsidian/?${params.toString()}`;
     }
 

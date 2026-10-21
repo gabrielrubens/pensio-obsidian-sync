@@ -7,6 +7,14 @@ workflow publishes the section whose heading names the version, and refuses to
 publish a release without one. Releases before 0.5.0 are on
 [GitHub](https://github.com/gabrielrubens/pensio-obsidian-sync/releases).
 
+## 0.7.2
+
+- **Mirror delete only removes what this vault synced.** It used to remove every Obsidian entry on your account that this vault did not have, so with two vaults on one account (a work vault, a test vault, a phone with other folders), Mirror delete in one deleted the other's entries. Now it removes the entry of a note this vault synced and no longer has, and nothing else. It also no longer reads through your whole account to do it, so it asks Pensio nothing when nothing is gone.
+- **If that happened to you:** in the vault whose entries went missing, press Disconnect and then Connect to Pensio. That vault then sends every note again.
+- **A note you delete while offline is deleted on Pensio the next time the plugin syncs.** Before, a delete that failed was dropped. With Mirror delete on, this now holds even after Obsidian restarts. A note renamed and then deleted straight away is deleted too.
+- **Mirror delete only cleans up what this vault synced.** Entries that earlier versions left behind for notes this vault no longer tracks are not swept up any more.
+- **A Server URL ending in "/" works.** "https://pensio.app/" opened the right page in your browser and then made every request fail. The plugin now ignores a trailing slash, a pasted /api or /api/v1, and "www.", and adds https:// when it is missing.
+
 ## 0.7.1
 
 - **The card at the top of the settings draws once.** In 0.7.0 every redraw added another line and another icon to it.

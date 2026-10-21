@@ -1,6 +1,7 @@
 import {
     ButtonComponent, ConfirmationModal, ExtraButtonComponent, Setting, SettingDefinition, SettingDefinitionItem, setIcon,
 } from 'obsidian';
+import { serverUrl } from './apiUrl';
 import PensioPlugin from './main';
 import { NOTICE_MS, notify, notifyFailure } from './notices';
 import { QuotaRow } from './quotaRow';
@@ -70,7 +71,7 @@ export class ConnectionSection {
     }
 
     private apiUrl(): string {
-        return (this.plugin.settings.apiUrl || 'https://pensio.app').replace(/\/+$/, '');
+        return serverUrl(this.plugin.settings.apiUrl);
     }
 
     state(): ConnectionState {

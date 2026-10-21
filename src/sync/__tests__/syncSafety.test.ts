@@ -19,25 +19,29 @@
  * - mirrorAllowed without the folder-change guard → "clearing a folder field" RED;
  * - mirrorDelete without removeFileTracking → "a restored note is sent again" RED;
  * - mirrorAllowed without the lost-folder guard → "a folder that held notes" RED;
- * - mirrorAllowed without the hourly gate → "at most hourly" RED;
  * - startAutoSync not keeping its timer (so stopWatching cannot clear it) →
  *   "stopping cancels the startup sync" RED;
  * - runSync passing contacted=true always → "a sync that sends nothing" RED;
  * - syncAll without the in-flight join → "a second sync joins" RED;
  * - the chunk loops without `halted` → "the first chunk that fails" RED.
+ * Re-checked on 0.7.2 (2026-10-21), where mirror delete deletes by path what
+ * this vault synced (sync/mirror.ts) instead of listing the account, each
+ * alone then restored (and the hourly gate, which 0.7.2 first dropped with the
+ * listing, is back as a margin):
+ * - mirrorSkip without the folder-change guard → "clearing a folder field" RED;
+ * - mirrorDelete without removeFileTracking → "a restored note is sent again" RED;
+ * - mirrorSkip without the lost-folder guard → "a folder that held notes" RED;
+ * - mirrorAllowed without the hourly gate → "at most hourly" RED;
+ * - onFileDeleted dropping the history at once again → "stays in the history
+ *   until Pensio has answered its delete" RED;
+ * - processDeletes not queueing a failed delete again → the same test RED.
  */
-import { EntryResponse, PensioSettings } from '../../types';
+import { TFile } from 'obsidian';
+import { BulkSyncItem, PensioSettings } from '../../types';
 import { SyncEngine } from '../engine';
 import { FakeFile, fakeVault } from './fakeVault';
 
 jest.mock('obsidian');
-
-const entry = (id: string, file_path: string): EntryResponse => ({
-    id, title: '', content_html: '', content_plain: '', entry_date: '2026-10-20', entry_type: 'daily_journal',
-    source: 'obsidian_plugin', file_path, file_hash: '', frontmatter: {}, primary_emotion: '',
-    file_modified_at: '2026-10-20T00:00:00Z', api_last_modified: null,
-    created_at: '2026-10-20T00:00:00Z', updated_at: '2026-10-20T00:00:00Z', people: [],
-});
 
 const ok = {
     entries: { created: 1, updated: 0, deleted: 0, skipped: 0, errors: [] },
@@ -57,10 +61,6 @@ function setup(folders = ['Diary'], files: FakeFile[] = [{ path: 'Diary/2026-10-
     const api = {
         isAuthInvalidated: () => false,
         bulkSync: jest.fn().mockResolvedValue(ok),
-        listEntries: jest.fn().mockResolvedValue([] as EntryResponse[]),
-        listPeople: jest.fn().mockResolvedValue([]),
-        deleteEntry: jest.fn().mockResolvedValue(undefined),
-        deletePerson: jest.fn().mockResolvedValue(undefined),
         getSyncStatus: jest.fn().mockResolvedValue({ total_entries: 1 }),
     };
     const engine = new SyncEngine({ vault } as never, settings, api as never);
@@ -77,8 +77,13 @@ async function settleUntil(done: () => boolean, turns = 500): Promise<void> {
 }
 
 const sentPaths = (api: { bulkSync: jest.Mock }): string[] =>
-    api.bulkSync.mock.calls.flatMap(([entries, people]: [{ file_path: string }[], { file_path: string }[]]) =>
-        [...entries, ...people].map(item => item.file_path));
+    api.bulkSync.mock.calls.flatMap(([entries, people]: [BulkSyncItem[], BulkSyncItem[]]) =>
+        [...entries, ...people].filter(item => item.action !== 'delete').map(item => item.file_path));
+
+/** Paths mirror delete (or a live delete) asked Pensio to delete. */
+const deletedPaths = (api: { bulkSync: jest.Mock }): string[] =>
+    api.bulkSync.mock.calls.flatMap(([entries]: [BulkSyncItem[]]) =>
+        entries.filter(item => item.action === 'delete').map(item => item.file_path));
 
 describe('mirror delete', () => {
     it('does not delete a folder’s entries while its folder field is being cleared or retyped', async () => {
@@ -86,14 +91,13 @@ describe('mirror delete', () => {
         // field is empty: only the folder-change guard stands in the way.
         const { engine, settings, api } = setup(['Diary', 'Travel'], [{ path: 'Diary/a.md' }, { path: 'Travel/t.md' }]);
         await engine.syncAll(false, { asked: true });
-        api.listEntries.mockResolvedValue([entry('ea', 'Diary/a.md'), entry('et', 'Travel/t.md')]);
 
         settings.journalFolders[1].folder = '';          // cleared, about to be retyped
         await engine.syncAll(false, { asked: true });
         settings.journalFolders[1].folder = 'Tra';       // half typed
         await engine.syncAll(false, { asked: true });
 
-        expect(api.deleteEntry).not.toHaveBeenCalled();
+        expect(deletedPaths(api)).toEqual([]);
     });
 
     it('sends a note again when it comes back after mirror delete removed its entry', async () => {
@@ -102,9 +106,8 @@ describe('mirror delete', () => {
 
         // b.md deleted while Obsidian was closed: mirror delete removes its entry.
         setFiles([{ path: 'Diary/a.md' }]);
-        api.listEntries.mockResolvedValue([entry('ea', 'Diary/a.md'), entry('eb', 'Diary/b.md')]);
         await engine.syncAll(false, { asked: true });
-        expect(api.deleteEntry).toHaveBeenCalledWith('eb');
+        expect(deletedPaths(api)).toEqual(['Diary/b.md']);
 
         // It comes back, unchanged.
         setFiles([{ path: 'Diary/a.md' }, { path: 'Diary/b.md' }]);
@@ -119,20 +122,44 @@ describe('mirror delete', () => {
         await engine.syncAll(false, { asked: true });
 
         setFiles([{ path: 'Diary/a.md' }]); // Travel/ renamed in the vault
-        api.listEntries.mockResolvedValue([entry('ea', 'Diary/a.md'), entry('et', 'Travel/t.md')]);
         await engine.syncAll(false, { asked: true });
 
-        expect(api.deleteEntry).not.toHaveBeenCalled();
+        expect(deletedPaths(api)).toEqual([]);
     });
 
-    it('runs at most hourly by itself, and at once when she asks', async () => {
-        const { engine, api } = setup();
-        await engine.syncAll();          // automatic: lists the account once
-        await engine.syncAll();          // automatic, a minute later: not again
-        expect(api.listEntries).toHaveBeenCalledTimes(1);
+    it('deletes by itself at most hourly, and at once when she asks', async () => {
+        // A margin, not a cost: a folder off the list for a moment must not
+        // lose its entries at the next automatic sync (review of 0.7.2).
+        const { engine, api, setFiles } = setup(['Diary'], [{ path: 'Diary/a.md' }, { path: 'Diary/b.md' }]);
+        await engine.syncAll();                  // automatic: the hour starts
+        setFiles([{ path: 'Diary/a.md' }]);
+        await engine.syncAll();                  // automatic, a minute later: not yet
+        expect(deletedPaths(api)).toEqual([]);
 
         await engine.syncAll(false, { asked: true });
-        expect(api.listEntries).toHaveBeenCalledTimes(2);
+        expect(deletedPaths(api)).toEqual(['Diary/b.md']);
+    });
+});
+
+describe('a deleted note', () => {
+    it('stays in the history until Pensio has answered its delete, so a failed one is sent again', async () => {
+        const { engine, api, setFiles } = setup(['Diary'], [{ path: 'Diary/a.md' }, { path: 'Diary/b.md' }]);
+        const handlers: Record<string, (file: unknown) => void> = {};
+        ((engine as unknown as { app: { vault: { on: jest.Mock } } }).app.vault.on)
+            .mockImplementation((event: string, fn: (file: unknown) => void) => { handlers[event] = fn; });
+        engine.startWatching();
+        await engine.syncAll(false, { asked: true });
+
+        setFiles([{ path: 'Diary/a.md' }]);
+        api.bulkSync.mockRejectedValueOnce(new Error('net::ERR_INTERNET_DISCONNECTED'));
+        handlers['delete'](Object.assign(new (TFile as unknown as new () => TFile)(), { path: 'Diary/b.md' }));
+        await engine.syncAll();                  // the delete fails
+        expect(deletedPaths(api)).toEqual(['Diary/b.md']);
+        expect(engine.getTrackedFileCount()).toBe(2);
+
+        await engine.syncAll();                  // and is sent again
+        expect(deletedPaths(api)).toEqual(['Diary/b.md', 'Diary/b.md']);
+        expect(engine.getTrackedFileCount()).toBe(1);
     });
 });
 
@@ -179,8 +206,7 @@ describe('a sync', () => {
         const afterUpload = engine.getLastSyncTime();
         expect(succeeded).toHaveBeenLastCalledWith(true);
 
-        api.listEntries.mockClear();
-        const quiet = await engine.syncAll();    // nothing changed, mirror not due
+        const quiet = await engine.syncAll();    // nothing changed, nothing gone
         expect(quiet.contacted).toBe(false);
         expect(succeeded).toHaveBeenLastCalledWith(false);
         expect(engine.getLastSyncTime()).toBe(afterUpload);
@@ -200,7 +226,6 @@ describe('a sync', () => {
         await expect(engine.syncAll(false, { asked: true })).rejects.toThrow('Rate limit');
 
         expect(api.bulkSync).toHaveBeenCalledTimes(1);   // not 4: 160 notes, 50 a chunk
-        expect(api.listEntries).not.toHaveBeenCalled();
     });
 
     it('started while another runs joins it, and gets its real result', async () => {

@@ -5,6 +5,7 @@ import { SyncFailure } from '../errors';
 import { debugLog } from '../logger';
 import { BulkSyncItem, CreateEntryRequest, CreatePersonRequest, PensioSettings, ProcessingStatus, SyncedFileInfo, SyncStateData } from '../types';
 import { computeContentHash } from './hash';
+import { deleteItems, goneNotes, MIRROR_CHUNK, mirrorSkip } from './mirror';
 import { extractDateFromFilename, ParsedMarkdown, parseMarkdown } from './parser';
 
 /**
@@ -37,15 +38,24 @@ export class SyncEngine {
      * (review F10).
      */
     private initialSyncTimer: number | null = null;
-    /** Mirror delete pages through the whole account: at most this often by itself. */
-    private readonly MIRROR_INTERVAL_MS = 60 * 60 * 1000;
-    private lastMirrorAt = 0;
     /** The folder settings the last successful sync used (see mirrorAllowed). */
     private foldersAtLastSync: string;
     /** The sync running now, so a second caller gets its real result. */
     private current: Promise<SyncResult> | null = null;
     /** A request of this sync reached Pensio and was answered. */
     private contacted = false;
+    /**
+     * Mirror delete deletes by itself at most this often; Sync now runs it at
+     * once. ⛔ Not for what it costs — since 0.7.2 a pass with nothing gone
+     * sends nothing — but as a margin. The folder-change guard defers mirror
+     * delete for one sync only, so without this a folder field left half
+     * typed, or a folder taken off the list for a moment, lost its entries at
+     * the next automatic sync, minutes later. 0.7.1 had the gate for the
+     * account listing, and 0.7.2 first removed it with the listing (review of
+     * 0.7.2, 2026-10-21).
+     */
+    private readonly MIRROR_INTERVAL_MS = 60 * 60 * 1000;
+    private lastMirrorAt = 0;
     private readonly MAX_ENTRY_SIZE_MB = 1;
     private readonly SYNC_INTERVAL_MS = 5 * 60 * 1000;
     private readonly INITIAL_SYNC_DELAY_MS = 5000;
@@ -239,9 +249,23 @@ export class SyncEngine {
         if (!this.shouldSyncFile(file)) return;
 
         debugLog('File deleted:', file.path);
-        this.removeFileTracking(file.path);
         this.dirtyFiles.delete(file.path);
-        this.pendingDeletes.add(file.path);
+        // A move still waiting to be sent never reached Pensio, so the entry
+        // is at the path the note came from: delete that one.
+        let path = file.path;
+        this.pendingRenames.forEach((to, from) => { if (to === file.path) path = from; });
+        if (path !== file.path) {
+            this.pendingRenames.delete(path);
+            const tracked = this.syncedFiles.get(file.path);
+            this.syncedFiles.delete(file.path);
+            if (tracked) this.syncedFiles.set(path, tracked);
+        }
+        // ⭐ The history keeps the path until Pensio has answered the delete
+        // (processDeletes). ⛔ It used to drop it here, before anything was
+        // sent: a delete that failed (offline, a 429, a 5xx) was then lost,
+        // and since 0.7.2 mirror delete, which works from the history, could
+        // never find it again (review of 0.7.2, 2026-10-21).
+        this.pendingDeletes.add(path);
         this.scheduleSyncFromWatcher();
     }
 
@@ -284,18 +308,29 @@ export class SyncEngine {
         // a → b, then b → c before a sync, is one move from a.
         let origin: string | undefined;
         this.pendingRenames.forEach((to, from) => { if (to === oldPath) origin = from; });
-        this.syncedFiles.delete(oldPath);
         this.dirtyFiles.delete(oldPath);
 
         const sameKind = wasIn && isIn &&
             this.detectContentType(oldPath) === this.detectContentType(file.path);
         if (sameKind && (tracked || origin)) {
+            this.syncedFiles.delete(oldPath);
             if (origin) this.pendingRenames.delete(origin);
             this.pendingRenames.set(origin ?? oldPath, file.path);
             if (tracked) this.syncedFiles.set(file.path, tracked);
-        } else if (isIn) {
-            this.dirtyFiles.add(file.path);
+            this.scheduleSyncFromWatcher();
+            return;
         }
+        // ⭐ Not sent as a move, so its entry stays on Pensio where it was, and
+        // the sync history keeps that path: mirror delete removes only what
+        // this vault synced (sync/mirror.ts), so a path dropped here would keep
+        // its entry for good. A move still waiting to be sent never reached
+        // Pensio, so the entry is at the path it came from.
+        if (origin) {
+            this.pendingRenames.delete(origin);
+            this.syncedFiles.delete(oldPath);
+            if (tracked) this.syncedFiles.set(origin, tracked);
+        }
+        if (isIn) this.dirtyFiles.add(file.path);
         this.scheduleSyncFromWatcher();
     }
 
@@ -918,74 +953,48 @@ export class SyncEngine {
     }
 
     /**
-     * Whether this sync may run mirror delete, which deletes every entry whose
-     * note it cannot see. ⛔ So it runs only when what it sees can be trusted
-     * (review F10): with Mirror delete on, clearing a folder field for 5 s
-     * deleted that folder's entries on Pensio. It is skipped when:
-     * - the folder settings changed since the last successful sync (she may be
-     *   typing a path);
-     * - a configured folder that held notes this vault synced does not exist
-     *   now (renamed, or mistyped): a folder that never existed has nothing on
-     *   Pensio to lose, so the default People folder may simply be missing;
-     * - the sync sees no notes at all.
-     * And because it pages through the whole account, it runs by itself at most
-     * once an hour; Sync now or a command runs it at once (review F9).
+     * Whether this sync may run mirror delete: never when `mirrorSkip` says
+     * so, and by itself at most once an hour (`MIRROR_INTERVAL_MS`).
      */
     private mirrorAllowed(asked: boolean, filesToSync: TFile[]): boolean {
-        if (!this.settings.enableMirrorDelete) return false;
-        if (filesToSync.length === 0) return false;
-        if (this.folderSettings() !== this.foldersAtLastSync) {
-            debugLog('Mirror delete skipped: the folder settings changed since the last sync');
-            return false;
-        }
-        const roots = [...this.settings.journalFolders.map(m => m.folder), this.settings.peopleFolder]
-            .filter(folder => folder.trim().length > 0);
-        const tracked = [...this.syncedFiles.keys()];
-        const lostFolder = roots.some(root =>
-            !this.app.vault.getFolderByPath(root) && tracked.some(path => path.startsWith(`${root}/`)));
-        if (lostFolder) {
-            debugLog('Mirror delete skipped: a sync folder with synced notes does not exist');
-            return false;
-        }
-        return asked || Date.now() - this.lastMirrorAt >= this.MIRROR_INTERVAL_MS;
+        const skip = mirrorSkip({
+            enabled: this.settings.enableMirrorDelete,
+            seen: filesToSync,
+            foldersChanged: this.folderSettings() !== this.foldersAtLastSync,
+            roots: [...this.settings.journalFolders.map(m => m.folder), this.settings.peopleFolder]
+                .filter(folder => folder.trim().length > 0),
+            folderExists: root => this.app.vault.getFolderByPath(root) !== null,
+            tracked: [...this.syncedFiles.keys()],
+        });
+        if (skip && this.settings.enableMirrorDelete) debugLog(`Mirror delete skipped: ${skip}`);
+        return skip === null && (asked || Date.now() - this.lastMirrorAt >= this.MIRROR_INTERVAL_MS);
     }
 
     // ========================================================================
     // Delete handling
     // ========================================================================
 
+    /**
+     * Send the deletes of notes deleted while the plugin ran, by path, in
+     * both sections (see `deleteItems`), and only then drop each path from
+     * the history. A request that fails keeps the rest queued for the next
+     * sync, and in the history, where mirror delete can find them too.
+     */
     private async processDeletes(): Promise<void> {
-        const deletePaths = Array.from(this.pendingDeletes);
+        const paths = Array.from(this.pendingDeletes);
         this.pendingDeletes.clear();
 
-        const entryDeletes: BulkSyncItem[] = [];
-        const peopleDeletes: BulkSyncItem[] = [];
-
-        for (const filePath of deletePaths) {
-            const contentType = this.detectContentType(filePath);
-            const item: BulkSyncItem = { action: 'delete', file_path: filePath };
-            if (contentType === 'person') {
-                peopleDeletes.push(item);
-            } else {
-                entryDeletes.push(item);
-            }
-        }
-
-        if (entryDeletes.length > 0) {
+        for (let i = 0; i < paths.length; i += MIRROR_CHUNK) {
+            const chunk = paths.slice(i, i + MIRROR_CHUNK);
+            const items = deleteItems(chunk);
             try {
-                const result = await this.reached(this.apiClient.bulkSync(entryDeletes, []));
-                debugLog(`Deleted ${result.entries.deleted} entries`);
+                const result = await this.reached(this.apiClient.bulkSync(items, items));
+                debugLog(`Deleted ${result.entries.deleted} entries, ${result.people.deleted} people`);
+                for (const path of chunk) this.removeFileTracking(path);
             } catch (error) {
-                console.error('Bulk entry delete failed:', error);
-            }
-        }
-
-        if (peopleDeletes.length > 0) {
-            try {
-                const result = await this.reached(this.apiClient.bulkSync([], peopleDeletes));
-                debugLog(`Deleted ${result.people.deleted} people`);
-            } catch (error) {
-                console.error('Bulk people delete failed:', error);
+                console.error('Bulk delete failed:', error);
+                for (const path of paths.slice(i)) this.pendingDeletes.add(path);
+                return;
             }
         }
     }
@@ -994,38 +1003,21 @@ export class SyncEngine {
     // Mirror delete
     // ========================================================================
 
+    /**
+     * Delete the entries of notes this vault synced and no longer sees
+     * (sync/mirror.ts). A request that fails stops it and fails the sync;
+     * what it did not reach stays in the history and is tried next time.
+     */
     private async mirrorDelete(localFiles: TFile[]): Promise<void> {
-        debugLog('Starting mirror delete');
-
-        const localPaths = new Set(localFiles.map(f => f.path));
-
-        try {
-            const serverEntries = await this.reached(this.apiClient.listEntries());
-            for (const entry of serverEntries) {
-                if (!entry.file_path) continue;
-                if (entry.source !== 'obsidian_plugin') continue;
-                if (!localPaths.has(entry.file_path)) {
-                    debugLog(`Deleting entry not in vault: ${entry.file_path}`);
-                    await this.reached(this.apiClient.deleteEntry(entry.id));
-                    // So the note is sent again if it comes back.
-                    this.removeFileTracking(entry.file_path);
-                }
-            }
-
-            const serverPeople = await this.reached(this.apiClient.listPeople());
-            for (const person of serverPeople) {
-                if (!person.person_note_path) continue;
-                if (person.source !== 'obsidian_plugin') continue;
-                if (!localPaths.has(person.person_note_path)) {
-                    debugLog(`Deleting person not in vault: ${person.person_note_path}`);
-                    await this.reached(this.apiClient.deletePerson(person.id));
-                    this.removeFileTracking(person.person_note_path);
-                }
-            }
-
-            debugLog('Mirror delete completed');
-        } catch (error) {
-            console.error('Mirror delete failed:', error);
+        const gone = goneNotes(this.syncedFiles.keys(), localFiles);
+        for (let i = 0; i < gone.length; i += MIRROR_CHUNK) {
+            const paths = gone.slice(i, i + MIRROR_CHUNK);
+            const items = deleteItems(paths);
+            const result = await this.reached(this.apiClient.bulkSync(items, items));
+            debugLog(`Mirror delete: ${result.entries.deleted} entries, ${result.people.deleted} people`);
+            // Answered: Pensio has no entry at these paths now, so a note
+            // that comes back is sent again.
+            for (const path of paths) this.removeFileTracking(path);
         }
     }
 }

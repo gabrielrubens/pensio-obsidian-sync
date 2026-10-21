@@ -5,8 +5,8 @@
  * list; the Community plugin review reports that as access to every file path
  * in the vault. It now walks the configured folders and nothing else.
  *
- * ⛔ The list it builds is what mirror delete compares the server against: a
- * file missing from it is an entry deleted on Pensio. So the first test holds
+ * ⛔ The list it builds is what mirror delete compares this vault's sync
+ * history against: a synced file missing from it is an entry deleted on Pensio. So the first test holds
  * the walk to the old filter's exact answer, on a vault built to trip it —
  * a nested configured folder, a folder whose name starts with another's, a
  * non-markdown file, notes at the root and outside every folder.
@@ -38,8 +38,6 @@ function engineFor(settings: Partial<PensioSettings>) {
     const vault = fakeVault(() => VAULT);
     vault.read.mockResolvedValue('note');
     const apiClient = {
-        listEntries: jest.fn().mockResolvedValue([]),
-        listPeople: jest.fn().mockResolvedValue([]),
         bulkSync: jest.fn().mockResolvedValue({
             entries: { created: 0, updated: 0, deleted: 0, skipped: 0, errors: [] },
             people: { created: 0, updated: 0, deleted: 0, skipped: 0, errors: [] },

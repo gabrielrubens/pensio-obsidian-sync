@@ -57,10 +57,6 @@ My sister.
 
     beforeEach(() => {
         mockApiClient = {
-            listEntries: jest.fn().mockResolvedValue([]),
-            listPeople: jest.fn().mockResolvedValue([]),
-            deleteEntry: jest.fn().mockResolvedValue(undefined),
-            deletePerson: jest.fn().mockResolvedValue(undefined),
             bulkSync: jest.fn().mockResolvedValue({
                 entries: { created: 0, updated: 0, deleted: 0, skipped: 0, errors: [] },
                 people: { created: 1, updated: 0, deleted: 0, skipped: 0, errors: [] },

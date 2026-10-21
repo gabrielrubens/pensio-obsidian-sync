@@ -1,4 +1,5 @@
 import { requestUrl } from 'obsidian';
+import { serverUrl } from '../apiUrl';
 import { refusal, RefusalDetails } from '../errors';
 import { debugLog } from '../logger';
 
@@ -180,8 +181,7 @@ export class TokenManager {
             throw new RefreshError('auth-invalid', 'No refresh token available');
         }
 
-        // Normalize: fallback to default if empty, strip www. to avoid Cloudflare 301 redirect
-        const baseUrl = (this.apiUrl || 'https://pensio.app').replace('://www.', '://');
+        const baseUrl = serverUrl(this.apiUrl);
         const generation = this.generation;
         /** What the server last said, so a failed refresh can say why. */
         let last: { status?: number; details: RefusalDetails } = { details: {} };

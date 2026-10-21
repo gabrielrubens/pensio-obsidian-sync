@@ -8,6 +8,19 @@
  *   - inside the synced folders → the entry moves (same id, reading, links)
  *   - out of the synced folders → the entry stays; moving is not deleting
  *   - an older server that cannot move a row → delete + create, as before
+ *
+ * ⭐ Since 0.7.2 mirror delete removes only paths in this vault's sync
+ * history (sync/mirror.ts), so a note that moves out keeps its old path there:
+ * that is where its entry still is, and what mirror delete, if on, removes.
+ * Sabotage-checked (2026-10-21), each alone then restored:
+ * - onFileRenamed dropping the old path again for a note that leaves →
+ *   "keeps the entry" RED and "mirror delete removes it" RED;
+ * - the leaving branch keeping the half-way path instead of the origin →
+ *   "a move that never reached Pensio" RED;
+ * - onFileDeleted deleting the note's last path instead of its origin →
+ *   "before the move was sent" RED;
+ * - processDeletes sending to the entries section only → "before the move was
+ *   sent" RED and "falls back to delete + create" RED.
  */
 import { TFile, TFolder } from 'obsidian';
 import { BulkSyncItem, BulkSyncResponse, PensioSettings } from '../../types';
@@ -67,10 +80,6 @@ function setup({ canRename = true, refuse = [] as string[], mirror = false } = {
                 ...(canRename ? { capabilities: { rename: true } } : {}),
             };
         }),
-        listEntries: jest.fn(async () => []),
-        listPeople: jest.fn(async () => []),
-        deleteEntry: jest.fn(async () => undefined),
-        deletePerson: jest.fn(async () => undefined),
         isAuthInvalidated: jest.fn(() => false),
         getSyncStatus: jest.fn(async () => ({ last_sync: null, total_entries: 0 })),
     };
@@ -210,8 +219,38 @@ describe('Leaving and entering the synced folders', () => {
         await env.engine.syncAll(false);
 
         expect(env.sent()).toEqual([]);
-        expect(env.api.deleteEntry).not.toHaveBeenCalled();
-        expect(env.tracked()).toEqual([]);
+        // Its entry is still on Pensio at the old path, so the history keeps it.
+        expect(env.tracked()).toEqual(['Journal/kept.md']);
+    });
+
+    it('with Mirror delete on, removes the entry of a note that moved out', async () => {
+        const env = setup({ mirror: true });
+        const kept = makeFile('Journal/kept.md');
+        const note = makeFile('Journal/leaves.md');
+        env.files.push(kept, note);
+        await synced(env);
+
+        env.move(note, 'Archive/leaves.md');
+        await env.engine.syncAll(false, { asked: true });
+
+        expect(env.sent()).toEqual(['delete Journal/leaves.md', 'delete Journal/leaves.md']);
+        expect(env.tracked()).toEqual(['Journal/kept.md']);
+    });
+
+    it('a move that never reached Pensio leaves the entry where Pensio has it', async () => {
+        // Renamed inside the folders, then moved out, before any sync: the
+        // first move was never sent, so the entry is still at the first path.
+        const env = setup({ mirror: true });
+        const kept = makeFile('Journal/kept.md');
+        const note = makeFile('Journal/a.md');
+        env.files.push(kept, note);
+        await synced(env);
+
+        env.move(note, 'Journal/b.md');
+        env.move(note, 'Archive/c.md');
+        await env.engine.syncAll(false, { asked: true });
+
+        expect(env.sent()).toEqual(['delete Journal/a.md', 'delete Journal/a.md']);
     });
 
     it('syncs a note that moves in as a new one', async () => {
@@ -238,6 +277,26 @@ describe('Leaving and entering the synced folders', () => {
     });
 });
 
+describe('Renamed, then deleted', () => {
+    it('before the move was sent: the entry is deleted where Pensio has it', async () => {
+        // The move never reached Pensio, so its entry is still at the first
+        // path. ⛔ Until 0.7.2's review the delete named the second path, the
+        // server answered "not found", and the entry stayed for good.
+        const env = setup();
+        const note = makeFile('Journal/a.md');
+        env.files.push(note);
+        await synced(env);
+
+        env.move(note, 'Journal/b.md');
+        env.files.splice(env.files.indexOf(note), 1);
+        env.handlers['delete'](note);
+        await env.engine.syncAll(false);
+
+        expect(env.sent()).toEqual(['delete Journal/a.md', 'delete Journal/a.md']);
+        expect(env.tracked()).toEqual([]);
+    });
+});
+
 describe('A server that cannot, or will not, move it', () => {
     it('falls back to delete + create on an older server', async () => {
         const env = setup({ canRename: false, refuse: ['Journal/old.md'] });
@@ -250,6 +309,8 @@ describe('A server that cannot, or will not, move it', () => {
 
         expect(env.sent()).toEqual([
             'rename Journal/old.md → Journal/new.md',
+            // A delete goes to both sections since 0.7.2 (sync/mirror.ts deleteItems).
+            'delete Journal/old.md',
             'delete Journal/old.md',
             'create Journal/new.md',
         ]);

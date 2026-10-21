@@ -1,4 +1,5 @@
 import { Plugin, TFile } from 'obsidian';
+import { serverUrl } from './apiUrl';
 import { ApiClient } from './api/client';
 import { AccountCheck } from './accountCheck';
 import { AccountGuard } from './auth/accountGuard';
@@ -398,13 +399,13 @@ export default class PensioPlugin extends Plugin {
      * card's check. ⛔ So it promises no automatic retry.
      */
     failureContext(): FailureContext {
-        return { apiUrl: this.settings.apiUrl, retries: false };
+        return { apiUrl: serverUrl(this.settings.apiUrl), retries: false };
     }
 
     /** The same, for a sync: the automatic sync retries it, when it runs. */
     syncFailureContext(): FailureContext {
         return {
-            apiUrl: this.settings.apiUrl,
+            apiUrl: serverUrl(this.settings.apiUrl),
             retries: this.settings.autoSync && (this.syncEngine?.isAutoSyncing() ?? false),
         };
     }
@@ -602,7 +603,7 @@ export default class PensioPlugin extends Plugin {
         const notice = notify(quotaNoticeMessage(status), 20000);
         // messageEl is absent under the test mock — optional chaining keeps the
         // message itself working even if the click target is unavailable.
-        const apiUrl = this.settings.apiUrl;
+        const apiUrl = serverUrl(this.settings.apiUrl);
         (notice as { messageEl?: HTMLElement })?.messageEl?.addEventListener('click', () => {
             window.open(`${apiUrl}/pricing/`);
         });

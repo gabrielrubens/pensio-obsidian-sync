@@ -1,212 +1,196 @@
-import { EntryResponse, PensioSettings, PersonResponse } from '../../types';
+/**
+ * Mirror delete removes the entries of notes THIS VAULT synced and no longer
+ * has, and nothing else.
+ *
+ * ⛔ Until 0.7.2 it listed every entry on the account and deleted each
+ * Obsidian entry this vault had no note for. A second vault on the same
+ * account owns notes this one never had, so mirror delete in either vault
+ * deleted the other's entries, and the other vault, which still tracked them
+ * as synced, never sent them again (review CRIT-1, 2026-10-20). Gabriel's own
+ * Mac had two vaults syncing to production, one with Mirror delete on.
+ *
+ * Sabotage-checked (2026-10-21), each alone then restored:
+ * - goneNotes returning every path on the server instead of the history's
+ *   (the old rule, through the fake server's own list) → "another vault" RED;
+ * - mirrorDelete without removeFileTracking → "sent again when it comes back"
+ *   RED (in syncSafety.test.ts) and "nothing again once it deleted" RED;
+ * - mirrorSkip ignoring `enabled` → "off" RED;
+ * - deleteItems going to the entries section only → "a person note" RED;
+ * - mirrorDelete catching its own failure again → "a refused delete" RED.
+ */
+import { BulkSyncItem, BulkSyncResponse, PensioSettings } from '../../types';
 import { SyncEngine } from '../engine';
 import { FakeFile, fakeVault } from './fakeVault';
 
-// Mock obsidian module
 jest.mock('obsidian');
 
-describe('Mirror Delete Safety', () => {
-    let engine: SyncEngine;
-    let mockApiClient: any;
-    let mockApp: any;
-    let settings: PensioSettings;
-    let localFiles: FakeFile[];
+/**
+ * One Pensio account, shared by every vault in a test: a row per path, as
+ * the server keys them (user, file_path), each remembering which vault wrote
+ * it. A delete removes the row at that path and answers "not found" when
+ * there is none, as api/bulk_views.py does.
+ *
+ * ⭐ It also answers the account-wide list and the delete by id, which the
+ * plugin no longer calls, so that a change back to the old rule is caught
+ * here rather than failing quietly on a missing method.
+ */
+function account() {
+    const rows = new Map<string, string>();
+    const calls: { entries: BulkSyncItem[]; people: BulkSyncItem[] }[] = [];
+    const deletedById: string[] = [];
+    const answer = (items: BulkSyncItem[], vault: string) => {
+        const section = { created: 0, updated: 0, deleted: 0, skipped: 0, errors: [] as { file_path: string; error: string }[] };
+        for (const item of items) {
+            if (item.action === 'delete') {
+                if (rows.delete(item.file_path)) section.deleted++;
+                else section.errors.push({ file_path: item.file_path, error: 'Item not found for deletion' });
+            } else {
+                rows.set(item.new_file_path ?? item.file_path, vault);
+                section.created++;
+            }
+        }
+        return section;
+    };
+    const clientFor = (vault: string) => ({
+        isAuthInvalidated: () => false,
+        getSyncStatus: jest.fn().mockResolvedValue({ total_entries: rows.size }),
+        bulkSync: jest.fn(async (entries: BulkSyncItem[], people: BulkSyncItem[]): Promise<BulkSyncResponse> => {
+            calls.push({ entries, people });
+            return { entries: answer(entries, vault), people: answer(people, vault), total_time_ms: 0 };
+        }),
+        listEntries: jest.fn(async () =>
+            [...rows.keys()].map(path => ({ id: path, file_path: path, source: 'obsidian_plugin' }))),
+        listPeople: jest.fn(async () => []),
+        deleteEntry: jest.fn(async (id: string) => { rows.delete(id); deletedById.push(id); }),
+        deletePerson: jest.fn(async () => undefined),
+    });
+    const deletes = (): string[] => [
+        ...calls.flatMap(c => c.entries).filter(i => i.action === 'delete').map(i => i.file_path),
+        ...deletedById,
+    ];
+    return { rows, calls, clientFor, deletes };
+}
 
-    const makeEntry = (overrides: Partial<EntryResponse> = {}): EntryResponse => ({
-        id: 'entry-1',
-        title: 'Test',
-        content_html: '',
-        content_plain: '',
-        entry_date: '2026-01-01',
-        entry_type: 'daily_journal',
-        source: 'obsidian_plugin',
-        file_path: 'Journal/test.md',
-        file_hash: 'abc',
-        frontmatter: {},
-        primary_emotion: '',
-        file_modified_at: '2026-01-01T00:00:00Z',
-        api_last_modified: null,
-        created_at: '2026-01-01T00:00:00Z',
-        updated_at: '2026-01-01T00:00:00Z',
-        people: [],
-        ...overrides,
+function vault(server: ReturnType<typeof account>, name: string, files: FakeFile[], mirror = true) {
+    let local = files;
+    const settings: PensioSettings = {
+        apiUrl: 'https://pensio.app', deviceId: name, autoSync: false,
+        journalFolders: [{ folder: 'Journal' }], peopleFolder: 'People',
+        enableMirrorDelete: mirror, debugMode: false,
+    };
+    const v = fakeVault(() => local);
+    (v.read as jest.Mock).mockImplementation(async (file: { path: string }) => `# ${file.path}\n\nWords.`);
+    const api = server.clientFor(name);
+    const engine = new SyncEngine({ vault: v } as never, settings, api as never);
+    return { engine, settings, api, setFiles: (next: FakeFile[]) => { local = next; } };
+}
+
+// Every sync here is one she asked for, so the hourly gate (tested in
+// syncSafety.test.ts) does not hide what mirror delete would do.
+describe('mirror delete', () => {
+    it('deletes, by path, the entry of a note this vault synced and no longer has', async () => {
+        const server = account();
+        const a = vault(server, 'a', [{ path: 'Journal/kept.md' }, { path: 'Journal/gone.md' }]);
+        await a.engine.syncAll(false, { asked: true });
+
+        a.setFiles([{ path: 'Journal/kept.md' }]);   // deleted while Obsidian was closed
+        await a.engine.syncAll(false, { asked: true });
+
+        expect(server.deletes()).toEqual(['Journal/gone.md']);
+        expect([...server.rows.keys()]).toEqual(['Journal/kept.md']);
     });
 
-    const makePerson = (overrides: Partial<PersonResponse> = {}): PersonResponse => ({
-        id: 'person-1',
-        name: 'Alice',
-        aliases: [],
-        person_note_path: 'People/Alice.md',
-        relationship: '',
-        birthday: null,
-        tags: [],
-        from_locations: [],
-        lived_in: [],
-        metadata: {},
-        source: 'obsidian_plugin',
-        created_at: '2026-01-01T00:00:00Z',
-        updated_at: '2026-01-01T00:00:00Z',
-        ...overrides,
+    it('never deletes what another vault on the same account wrote', async () => {
+        const server = account();
+        const work = vault(server, 'work', [{ path: 'Journal/meeting.md' }, { path: 'Journal/plan.md' }], false);
+        await work.engine.syncAll(false, { asked: true });
+        const personal = vault(server, 'personal', [{ path: 'Journal/2026-10-20.md' }]);
+
+        await personal.engine.syncAll(false, { asked: true });
+        await personal.engine.syncAll(false, { asked: true });
+
+        expect(server.deletes()).toEqual([]);
+        expect([...server.rows.keys()].sort()).toEqual(['Journal/2026-10-20.md', 'Journal/meeting.md', 'Journal/plan.md']);
     });
 
-    beforeEach(() => {
-        mockApiClient = {
-            listEntries: jest.fn().mockResolvedValue([]),
-            listPeople: jest.fn().mockResolvedValue([]),
-            deleteEntry: jest.fn().mockResolvedValue(undefined),
-            deletePerson: jest.fn().mockResolvedValue(undefined),
-            bulkSync: jest.fn().mockResolvedValue({
-                entries: { created: 0, updated: 0, deleted: 0, skipped: 0, errors: [] },
-                people: { created: 0, updated: 0, deleted: 0, skipped: 0, errors: [] },
-                total_time_ms: 0,
-            }),
-            isAuthInvalidated: jest.fn().mockReturnValue(false),
-            getSyncStatus: jest.fn().mockResolvedValue({ last_sync: null, total_entries: 0 }),
-        };
+    it('sends a person note’s delete to the people section too', async () => {
+        // Whether a gone path was a person depends on the folder settings it
+        // was synced under, so the delete goes to both sections.
+        const server = account();
+        const a = vault(server, 'a', [{ path: 'Journal/day.md' }, { path: 'People/Ana.md' }, { path: 'People/Bo.md' }]);
+        await a.engine.syncAll(false, { asked: true });
 
-        settings = {
-            apiUrl: 'https://pensio.app',
-            deviceId: 'test',
-            autoSync: false,
-            journalFolders: [{ folder: 'Journal' }],
-            peopleFolder: 'People',
-            enableMirrorDelete: true,
-            debugMode: false,
-        };
+        // Bo stays, so the People folder is still there (a folder that is gone
+        // stops mirror delete altogether).
+        a.setFiles([{ path: 'Journal/day.md' }, { path: 'People/Bo.md' }]);
+        await a.engine.syncAll(false, { asked: true });
 
-        // ⭐ One note present by default. Since 0.7.1 mirror delete does not
-        // run when a sync sees no notes at all (review F10), so a test that
-        // started from an empty vault would pass for that reason alone and stop
-        // testing which entries it keeps.
-        localFiles = [{ path: 'Journal/kept.md' }];
-        mockApp = { vault: fakeVault(() => localFiles) };
-        mockApp.vault.read.mockResolvedValue('hello');
-
-        engine = new SyncEngine(mockApp, settings, mockApiClient);
+        const last = server.calls[server.calls.length - 1];
+        expect(last.people).toEqual([{ action: 'delete', file_path: 'People/Ana.md' }]);
+        expect(server.rows.has('People/Ana.md')).toBe(false);
     });
 
-    // --- Entry tests ---
+    it('asks Pensio nothing when no note it synced is gone, and nothing again once it deleted', async () => {
+        const server = account();
+        const a = vault(server, 'a', [{ path: 'Journal/kept.md' }, { path: 'Journal/gone.md' }]);
+        await a.engine.syncAll(false, { asked: true });
+        a.setFiles([{ path: 'Journal/kept.md' }]);
+        await a.engine.syncAll(false, { asked: true });
+        server.calls.length = 0;
 
-    it('should delete server entry not in local vault', async () => {
-        const entry = makeEntry({ id: 'e1', file_path: 'Journal/deleted.md', source: 'obsidian_plugin' });
-        mockApiClient.listEntries.mockResolvedValue([entry]);
+        const quiet = await a.engine.syncAll(false, { asked: true });
 
-        await engine.syncAll(false);
-
-        expect(mockApiClient.deleteEntry).toHaveBeenCalledWith('e1');
+        expect(server.calls).toEqual([]);
+        expect(quiet.contacted).toBe(false);
     });
 
-    it('should NOT delete entry with matching local file', async () => {
-        const entry = makeEntry({ id: 'e1', file_path: 'Journal/exists.md', source: 'obsidian_plugin' });
-        mockApiClient.listEntries.mockResolvedValue([entry]);
+    it('deletes nothing after the sync history is gone', async () => {
+        const server = account();
+        const a = vault(server, 'a', [{ path: 'Journal/kept.md' }, { path: 'Journal/gone.md' }]);
+        await a.engine.syncAll(false, { asked: true });
+        a.engine.clearState();
 
-        localFiles = [{ path: 'Journal/exists.md' }];
-        mockApp.vault.read.mockResolvedValue('hello');
+        a.setFiles([{ path: 'Journal/kept.md' }]);
+        await a.engine.syncAll(false, { asked: true });
 
-        await engine.syncAll(false);
-
-        expect(mockApiClient.deleteEntry).not.toHaveBeenCalled();
+        expect(server.deletes()).toEqual([]);
     });
 
-    it('should NOT delete entry with no file_path (web-created)', async () => {
-        const entry = makeEntry({ id: 'e1', file_path: null, source: 'web_gui' });
-        mockApiClient.listEntries.mockResolvedValue([entry]);
+    it('is off unless she turned it on', async () => {
+        const server = account();
+        const a = vault(server, 'a', [{ path: 'Journal/kept.md' }, { path: 'Journal/gone.md' }], false);
+        await a.engine.syncAll(false, { asked: true });
 
-        await engine.syncAll(false);
+        a.setFiles([{ path: 'Journal/kept.md' }]);
+        await a.engine.syncAll(false, { asked: true });
 
-        expect(mockApiClient.deleteEntry).not.toHaveBeenCalled();
+        expect(server.deletes()).toEqual([]);
     });
 
-    it('should NOT delete entry with source !== obsidian_plugin', async () => {
-        const webEntry = makeEntry({ id: 'e1', file_path: 'Journal/web.md', source: 'web_gui' });
-        const fsEntry = makeEntry({ id: 'e2', file_path: 'Journal/fs.md', source: 'file_system_sync' });
-        mockApiClient.listEntries.mockResolvedValue([webEntry, fsEntry]);
-
-        await engine.syncAll(false);
-
-        expect(mockApiClient.deleteEntry).not.toHaveBeenCalled();
-    });
-
-    it('should only delete obsidian_plugin entries among mixed sources', async () => {
-        const pluginEntry = makeEntry({ id: 'e1', file_path: 'Journal/gone.md', source: 'obsidian_plugin' });
-        const webEntry = makeEntry({ id: 'e2', file_path: 'Journal/web.md', source: 'web_gui' });
-        mockApiClient.listEntries.mockResolvedValue([pluginEntry, webEntry]);
-
-        await engine.syncAll(false);
-
-        expect(mockApiClient.deleteEntry).toHaveBeenCalledTimes(1);
-        expect(mockApiClient.deleteEntry).toHaveBeenCalledWith('e1');
-    });
-
-    // --- Person tests ---
-
-    it('should delete server person not in local vault', async () => {
-        const person = makePerson({ id: 'p1', person_note_path: 'People/Gone.md', source: 'obsidian_plugin' });
-        mockApiClient.listPeople.mockResolvedValue([person]);
-
-        await engine.syncAll(false);
-
-        expect(mockApiClient.deletePerson).toHaveBeenCalledWith('p1');
-    });
-
-    it('should NOT delete person with matching local file', async () => {
-        const person = makePerson({ id: 'p1', person_note_path: 'People/Alice.md', source: 'obsidian_plugin' });
-        mockApiClient.listPeople.mockResolvedValue([person]);
-
-        localFiles = [{ path: 'People/Alice.md' }];
-        mockApp.vault.read.mockResolvedValue('hello');
-
-        await engine.syncAll(false);
-
-        expect(mockApiClient.deletePerson).not.toHaveBeenCalled();
-    });
-
-    it('should NOT delete person with no person_note_path', async () => {
-        const person = makePerson({ id: 'p1', person_note_path: '', source: 'obsidian_plugin' });
-        mockApiClient.listPeople.mockResolvedValue([person]);
-
-        await engine.syncAll(false);
-
-        expect(mockApiClient.deletePerson).not.toHaveBeenCalled();
-    });
-
-    it('should NOT delete person with source !== obsidian_plugin', async () => {
-        const person = makePerson({ id: 'p1', person_note_path: 'People/Web.md', source: 'web_gui' });
-        mockApiClient.listPeople.mockResolvedValue([person]);
-
-        await engine.syncAll(false);
-
-        expect(mockApiClient.deletePerson).not.toHaveBeenCalled();
-    });
-
-    it('should NOT delete anything when the sync sees no notes at all', async () => {
+    it('deletes nothing when the sync sees no notes at all', async () => {
         // An empty view of the vault is far likelier a misconfiguration than a
         // vault emptied while Obsidian was closed (review F10).
-        localFiles = [];
-        mockApiClient.listEntries.mockResolvedValue([makeEntry({ id: 'e1', file_path: 'Journal/gone.md' })]);
+        const server = account();
+        const a = vault(server, 'a', [{ path: 'Journal/a.md' }]);
+        await a.engine.syncAll(false, { asked: true });
 
-        await engine.syncAll(false);
+        a.setFiles([]);
+        await a.engine.syncAll(false, { asked: true });
 
-        expect(mockApiClient.listEntries).not.toHaveBeenCalled();
-        expect(mockApiClient.deleteEntry).not.toHaveBeenCalled();
+        expect(server.deletes()).toEqual([]);
     });
 
-    // --- Mirror delete disabled ---
+    it('a refused delete fails the sync and is tried again next time', async () => {
+        const server = account();
+        const a = vault(server, 'a', [{ path: 'Journal/kept.md' }, { path: 'Journal/gone.md' }]);
+        await a.engine.syncAll(false, { asked: true });
+        a.setFiles([{ path: 'Journal/kept.md' }]);
+        a.api.bulkSync.mockRejectedValueOnce(Object.assign(new Error('Rate limit exceeded.'), { status: 429 }));
 
-    it('should NOT delete anything when mirror delete is disabled', async () => {
-        settings.enableMirrorDelete = false;
-        engine = new SyncEngine(mockApp, settings, mockApiClient);
+        await expect(a.engine.syncAll(false, { asked: true })).rejects.toThrow('Rate limit');
+        expect(server.rows.has('Journal/gone.md')).toBe(true);
 
-        const entry = makeEntry({ id: 'e1', file_path: 'Journal/gone.md', source: 'obsidian_plugin' });
-        const person = makePerson({ id: 'p1', person_note_path: 'People/Gone.md', source: 'obsidian_plugin' });
-        mockApiClient.listEntries.mockResolvedValue([entry]);
-        mockApiClient.listPeople.mockResolvedValue([person]);
-
-        await engine.syncAll(false);
-
-        expect(mockApiClient.listEntries).not.toHaveBeenCalled();
-        expect(mockApiClient.listPeople).not.toHaveBeenCalled();
-        expect(mockApiClient.deleteEntry).not.toHaveBeenCalled();
-        expect(mockApiClient.deletePerson).not.toHaveBeenCalled();
+        await a.engine.syncAll(false, { asked: true });
+        expect(server.rows.has('Journal/gone.md')).toBe(false);
     });
 });

@@ -1,22 +1,20 @@
 import { requestUrl, RequestUrlParam, RequestUrlResponse } from 'obsidian';
 import { RefreshError, TokenManager } from '../auth/tokenManager';
 import { refusal } from '../errors';
+import { serverUrl } from '../apiUrl';
 import { debugLog } from '../logger';
 import {
     BulkSyncItem,
     BulkSyncResponse,
     CurrentUserResponse,
-    EntryResponse,
     PairResponse,
     PensioSettings,
-    PersonResponse,
     SyncStatusResponse,
 } from '../types';
 
 /**
  * API client for Pensio REST API.
- * All syncing goes through bulkSync(). Individual CRUD kept only for
- * mirror-delete (listEntries/listPeople + deleteEntry/deletePerson).
+ * All syncing goes through bulkSync(), deletes and mirror delete included.
  */
 export class ApiClient {
     private settings: PensioSettings;
@@ -58,8 +56,7 @@ export class ApiClient {
             );
         }
 
-        // Normalize: fallback to default if empty, strip www. to avoid Cloudflare 301 redirect
-        const baseUrl = (this.settings.apiUrl || 'https://pensio.app').replace('://www.', '://');
+        const baseUrl = serverUrl(this.settings.apiUrl);
         const url = `${baseUrl}${endpoint}`;
 
         const options: RequestUrlParam = {
@@ -118,40 +115,6 @@ export class ApiClient {
         throw refusal(response, `Request failed, status ${response.status}`);
     }
 
-    private async fetchAllPages<T>(endpoint: string): Promise<T[]> {
-        const allResults: T[] = [];
-        let nextUrl: string | null = endpoint;
-
-        while (nextUrl) {
-            const response: {
-                count: number;
-                next: string | null;
-                previous: string | null;
-                results: T[];
-            } = await this.request<{
-                count: number;
-                next: string | null;
-                previous: string | null;
-                results: T[];
-            }>('GET', nextUrl);
-
-            allResults.push(...response.results);
-
-            if (response.next) {
-                try {
-                    const parsedUrl: URL = new URL(response.next);
-                    nextUrl = parsedUrl.pathname + parsedUrl.search;
-                } catch {
-                    nextUrl = response.next;
-                }
-            } else {
-                nextUrl = null;
-            }
-        }
-
-        return allResults;
-    }
-
     // ========================================================================
     // Auth
     // ========================================================================
@@ -206,7 +169,7 @@ export class ApiClient {
         previousRefresh: string,
         fallbackMessage: string
     ): Promise<PairResponse> {
-        const baseUrl = (this.settings.apiUrl || 'https://pensio.app').replace('://www.', '://');
+        const baseUrl = serverUrl(this.settings.apiUrl);
         const response = await requestUrl({
             url: `${baseUrl}${endpoint}`,
             method: 'POST',
@@ -245,30 +208,6 @@ export class ApiClient {
             '/api/v1/sync/bulk/',
             { entries, people }
         );
-    }
-
-    // ========================================================================
-    // Entries (list + delete only — used by mirror-delete)
-    // ========================================================================
-
-    async listEntries(): Promise<EntryResponse[]> {
-        return await this.fetchAllPages<EntryResponse>('/api/v1/entries/');
-    }
-
-    async deleteEntry(id: string): Promise<void> {
-        await this.request<void>('DELETE', `/api/v1/entries/${id}/`);
-    }
-
-    // ========================================================================
-    // People (list + delete only — used by mirror-delete)
-    // ========================================================================
-
-    async listPeople(): Promise<PersonResponse[]> {
-        return await this.fetchAllPages<PersonResponse>('/api/v1/people/');
-    }
-
-    async deletePerson(id: string): Promise<void> {
-        await this.request<void>('DELETE', `/api/v1/people/${id}/`);
     }
 
     // ========================================================================
