@@ -22,6 +22,12 @@ export interface TooLargeNote {
     mtime: number;
     /** What its own request would have been, in bytes. */
     bytes: number;
+    /**
+     * Measured with its text once (plugin 0.7.4, `serverCapabilities.ts`).
+     * ⭐ A note found too large with its text twice is read again once the
+     * server says it takes it once: it may fit now.
+     */
+    textOnce?: boolean;
 }
 
 export class TooLargeNotes {
@@ -35,20 +41,21 @@ export class TooLargeNotes {
     }
 
     /**
-     * True when this note has not changed since it was found too large: it
-     * still is, and it need not be read again.
+     * True when this note has not changed since it was found too large, and
+     * would go the same way (`textOnce`): it still is, and it need not be read
+     * again.
      */
-    unchanged(path: string, mtime: number): boolean {
+    unchanged(path: string, mtime: number, textOnce = false): boolean {
         const known = this.notes.get(path);
-        if (!known || known.mtime !== mtime) return false;
+        if (!known || known.mtime !== mtime || (known.textOnce ?? false) !== textOnce) return false;
         this.next?.set(path, known);
         return true;
     }
 
     /** This note is too large to sync, as it is now. */
-    add(path: string, mtime: number, bytes: number): void {
+    add(path: string, mtime: number, bytes: number, textOnce = false): void {
         console.warn(`Pensio: ${path} is too large to sync (its request would be ${bytes} bytes)`);
-        const note = { mtime, bytes };
+        const note = copied({ mtime, bytes, textOnce });
         if (this.next) this.next.set(path, note);
         else this.notes.set(path, note);
     }
@@ -66,7 +73,7 @@ export class TooLargeNotes {
 
     toState(): Record<string, TooLargeNote> {
         const state: Record<string, TooLargeNote> = {};
-        for (const [path, note] of this.notes) state[path] = { mtime: note.mtime, bytes: note.bytes };
+        for (const [path, note] of this.notes) state[path] = copied(note);
         return state;
     }
 
@@ -74,7 +81,7 @@ export class TooLargeNotes {
         this.notes = new Map();
         for (const path of Object.keys(state ?? {})) {
             const note: TooLargeNote = (state ?? {})[path];
-            this.notes.set(path, { mtime: note.mtime, bytes: note.bytes });
+            this.notes.set(path, copied(note));
         }
     }
 
@@ -82,6 +89,11 @@ export class TooLargeNotes {
         this.notes = new Map();
         this.next = null;
     }
+}
+
+/** A note's three fields, and nothing else a saved state may carry. */
+function copied(note: TooLargeNote): TooLargeNote {
+    return note.textOnce ? { mtime: note.mtime, bytes: note.bytes, textOnce: true } : { mtime: note.mtime, bytes: note.bytes };
 }
 
 /** A note's name, as Obsidian shows it: the file name without `.md`. */

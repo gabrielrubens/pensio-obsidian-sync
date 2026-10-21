@@ -8,6 +8,7 @@ import { itemBytes, Section, sendInChunks, tooLargeAlone } from './chunks';
 import { computeContentHash } from './hash';
 import { deleteItems, goneNotes, MIRROR_CHUNK, mirrorSkip } from './mirror';
 import { extractDateFromFilename, ParsedMarkdown, parseMarkdown } from './parser';
+import { ServerCapabilities } from './serverCapabilities';
 import { TooLargeNotes } from './tooLarge';
 
 /**
@@ -62,6 +63,8 @@ export class SyncEngine {
     private lastMirrorAt = 0;
     /** Notes whose own request is more than Pensio takes (sync/chunks.ts). */
     private tooLarge = new TooLargeNotes();
+    /** What the server last said it can do: whether a note's text may go once. */
+    private server = new ServerCapabilities(() => this.settings.apiUrl);
     private readonly SYNC_INTERVAL_MS = 5 * 60 * 1000;
     private readonly INITIAL_SYNC_DELAY_MS = 5000;
     private readonly STATE_SAVE_DEBOUNCE_MS = 5000;
@@ -408,7 +411,7 @@ export class SyncEngine {
                 const content = await this.app.vault.read(file);
                 const hash = await computeContentHash(content);
                 const built = this.buildData(file, parseMarkdown(content));
-                const item: BulkSyncItem = { action: 'rename', file_path: from, new_file_path: to, data: built.data };
+                const item = this.server.shaped({ action: 'rename', file_path: from, new_file_path: to, data: built.data });
                 if (tooLargeAlone(itemBytes(item))) {
                     this.moveNotSent(from, to); // the loop finds it too large, and says so
                     continue;
@@ -428,8 +431,7 @@ export class SyncEngine {
             const done = new Set<BulkSyncItem>();
             try {
                 await sendInChunks(items, {
-                    post: chunk => this.reached(section === 'people'
-                        ? this.apiClient.bulkSync([], chunk) : this.apiClient.bulkSync(chunk, [])),
+                    post: chunk => this.post(section, chunk),
                     answered: (chunk, result) => {
                         chunk.forEach(item => done.add(item));
                         this.renamesAnswered(chunk, result, section, sent);
@@ -473,11 +475,18 @@ export class SyncEngine {
         this.captureProcessingStatus(result.processing_status);
         const refused = new Set(result[section].errors.map((err: { file_path: string }) => err.file_path));
         const canRename = result.capabilities?.rename === true;
+        const lost = this.server.lostText(items, result);
         for (const item of items) {
             const info = sent.get(item.file_path);
             if (!info) continue;
             const failed = refused.has(item.file_path) ||
                 (item.new_file_path !== undefined && refused.has(item.new_file_path));
+            if (!failed && lost.has(item)) {
+                // Moved, but stored without its text: untracked, it is sent
+                // again in full, at its new path, by the loop of this sync.
+                this.removeFileTracking(info.file.path);
+                continue;
+            }
             if (!failed) {
                 this.updateFileTracking(info.file, info.hash);
                 continue;
@@ -630,6 +639,7 @@ export class SyncEngine {
         }
         this.syncedFiles = restored;
         this.tooLarge.restore(state.tooLarge);
+        this.server.restore(state.capabilities);
         debugLog(
             `Restored sync state: ${this.syncedFiles.size} tracked files, ` +
             `userId=${this.userId || 'none'}, ` +
@@ -662,6 +672,7 @@ export class SyncEngine {
             files,
             lastQuotaNoticeDay: this.lastQuotaNoticeDay,
             tooLarge: this.tooLarge.toState(),
+            capabilities: this.server.toState(),
         };
     }
 
@@ -671,6 +682,7 @@ export class SyncEngine {
         this.lastSyncTime = null;
         this.syncedFiles.clear();
         this.tooLarge.clear();
+        this.server.clear();
         // A different account has a different tier and quota — the previous
         // account's "already told them today" must not silence the new one.
         this.lastProcessingStatus = null;
@@ -818,7 +830,7 @@ export class SyncEngine {
                         }
                     }
                     // Too large when last read, and not edited since: still is.
-                    if (this.tooLarge.unchanged(file.path, file.stat.mtime)) continue;
+                    if (this.tooLarge.unchanged(file.path, file.stat.mtime, this.server.textOnce())) continue;
 
                     const content = await this.app.vault.read(file);
                     const hash = await computeContentHash(content);
@@ -832,11 +844,17 @@ export class SyncEngine {
                     }
 
                     const built = this.buildData(file, parseMarkdown(content));
-                    const item: BulkSyncItem = { action: 'create', file_path: file.path, data: built.data };
+                    let item = this.server.shaped({ action: 'create', file_path: file.path, data: built.data });
+                    // Too large with its text twice: a server that takes it
+                    // once may not have said so yet (serverCapabilities.ts).
+                    if (tooLargeAlone(itemBytes(item)) &&
+                        await this.server.askIfOnceFits(item, () => this.post('entries', []))) {
+                        item = this.server.shaped(item);
+                    }
                     // ⭐ A warning about this note, not a failed sync (review CRIT-4).
                     const bytes = itemBytes(item);
                     if (tooLargeAlone(bytes)) {
-                        this.tooLarge.add(file.path, file.stat.mtime, bytes);
+                        this.tooLarge.add(file.path, file.stat.mtime, bytes, this.server.wentOnce(item));
                         continue;
                     }
                     (built.kind === 'person' ? peopleItems : entryItems).push(item);
@@ -868,8 +886,7 @@ export class SyncEngine {
                 if (halted) break;
                 try {
                     await sendInChunks(items, {
-                        post: chunk => this.reached(section === 'people'
-                            ? this.apiClient.bulkSync([], chunk) : this.apiClient.bulkSync(chunk, [])),
+                        post: chunk => this.post(section, chunk),
                         answered: (chunk, result) => {
                             this.captureProcessingStatus(result.processing_status);
                             debugLog(`Bulk ${section}: ${chunk.length} sent, ` +
@@ -879,9 +896,18 @@ export class SyncEngine {
                                 const errMsg = typeof err.error === 'object' ? JSON.stringify(err.error) : err.error;
                                 errors.push(`${err.file_path}: ${errMsg}`);
                             }
+                            // ⛔ Stored without its text (serverCapabilities.ts::lostText):
+                            // not synced, and sent again in full next sync.
+                            const lost = this.server.lostText(chunk, result);
                             for (const item of chunk) {
                                 const info = trackingDeferred.get(item.file_path);
-                                if (info && !errorPaths.has(item.file_path)) this.updateFileTracking(info.file, info.hash);
+                                if (!info || errorPaths.has(item.file_path)) continue;
+                                if (lost.has(item)) {
+                                    trackingDeferred.delete(item.file_path);
+                                    this.dirtyFiles.add(item.file_path);
+                                    continue;
+                                }
+                                this.updateFileTracking(info.file, info.hash);
                             }
                         },
                         // The server's own limit is lower than the one the
@@ -889,7 +915,7 @@ export class SyncEngine {
                         refused: item => {
                             const info = trackingDeferred.get(item.file_path);
                             trackingDeferred.delete(item.file_path);
-                            if (info) this.tooLarge.add(item.file_path, info.file.stat.mtime, itemBytes(item));
+                            if (info) this.tooLarge.add(item.file_path, info.file.stat.mtime, itemBytes(item), this.server.wentOnce(item));
                         },
                     });
                 } catch (error) {
@@ -950,6 +976,14 @@ export class SyncEngine {
         } finally {
             this.isSyncing = false;
         }
+    }
+
+    /** One bulk request, in one section; its answer says what the server can do. */
+    private async post(section: Section, chunk: BulkSyncItem[]): Promise<BulkSyncResponse> {
+        const result = await this.reached(section === 'people'
+            ? this.apiClient.bulkSync([], chunk) : this.apiClient.bulkSync(chunk, []));
+        this.server.answered(result);
+        return result;
     }
 
     /** Pensio answered this request: the sync has been in touch. */

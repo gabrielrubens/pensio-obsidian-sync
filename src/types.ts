@@ -103,8 +103,14 @@ export interface PersonResponse {
 
 export interface CreateEntryRequest {
     title: string;
+    /** The note's raw file (markdown); the server renders it. */
     content_html: string;
-    content_plain: string;
+    /**
+     * The same raw file again. Left out for a server that said
+     * `capabilities.content_once`, which fills it from `content_html`
+     * (`sync/serverCapabilities.ts`).
+     */
+    content_plain?: string;
     entry_date: string | null;
     entry_type: string;
     file_path: string;  // Always set for plugin-synced entries
@@ -185,15 +191,30 @@ export interface BulkSyncResponse {
      * rename must fall back to delete + create — never an error message, which
      * is translated (`engine.ts::processRenames`).
      */
-    capabilities?: {
-        rename?: boolean;
-    };
+    capabilities?: Capabilities;
     /**
      * Optional: omitted by Pensio servers older than v0.5.3 and by
      * self-hosted instances that have not updated. Treat absence as
      * "unknown", never as "unlimited".
      */
     processing_status?: ProcessingStatus;
+}
+
+/** What a bulk answer says the server can do beyond create, update and delete. */
+export interface Capabilities {
+    /** It moves a renamed note's row (`engine.ts::processRenames`). */
+    rename?: boolean;
+    /**
+     * It fills `content_plain` from `content_html`, so a note's text may go
+     * once (`sync/serverCapabilities.ts`). Absent on servers that do not.
+     */
+    content_once?: boolean;
+}
+
+/** The last bulk answer's capabilities, and the Server URL that gave them. */
+export interface CapabilitiesState {
+    server: string;
+    capabilities: Capabilities;
 }
 
 /**
@@ -219,7 +240,13 @@ export interface SyncStateData {
      * them again nor loses the card's line about them. Absent on state written
      * before this field existed.
      */
-    tooLarge?: Record<string, { mtime: number; bytes: number }>;
+    tooLarge?: Record<string, { mtime: number; bytes: number; textOnce?: boolean }>;
+    /**
+     * What the server last said it can do (`sync/serverCapabilities.ts`), so
+     * a reload does not send a long note's text twice again. Absent on state
+     * written before this field existed, and until a server first answers.
+     */
+    capabilities?: CapabilitiesState;
 }
 
 /**

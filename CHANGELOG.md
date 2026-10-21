@@ -7,6 +7,10 @@ workflow publishes the section whose heading names the version, and refuses to
 publish a release without one. Releases before 0.5.0 are on
 [GitHub](https://github.com/gabrielrubens/pensio-obsidian-sync/releases).
 
+## 0.7.4
+
+- **Notes up to about 2 MB sync, twice the size they could before.** The plugin sent each note's text twice, so a note over about 1 MB was too large. Pensio now takes the text once, and the plugin sends it once as soon as Pensio says it can. A server that has not updated still gets it twice, as before.
+
 ## 0.7.3
 
 - **Vaults with many long notes finish syncing.** The plugin sent notes fifty at a time whatever their size, so a group of long notes made a request bigger than Pensio takes, and the sync stopped there every time. It now sends as much as Pensio takes in one go, and less again if a server says it is too much.

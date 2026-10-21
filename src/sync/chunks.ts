@@ -5,16 +5,18 @@ import { BulkSyncItem, BulkSyncResponse } from '../types';
  * How much one bulk request carries (plugin 0.7.3, review CRIT-4).
  *
  * ⛔ THE BUG: notes went fifty to a request, whatever their size, and each
- * note's text is in the body twice (`content_html` and `content_plain`: the
- * server hashes and stores the second, so it cannot be left out). Pensio
- * refuses a body over 2 MiB with an HTML 400 before the sync code runs, so
- * fifty long notes failed on the same request every sync, forever, and
- * nothing after them synced either.
+ * note's text went in the body twice (`content_html` and `content_plain`).
+ * Pensio refuses a body over 2 MiB with an HTML 400 before the sync code
+ * runs, so fifty long notes failed on the same request every sync, forever,
+ * and nothing after them synced either.
  *
  * ⭐ Now a request is measured in the bytes it sends, and stays under
  * `CHUNK_BUDGET_BYTES`. A note bigger than that goes alone; a note whose own
  * request is over `REQUEST_LIMIT_BYTES` cannot sync at all, and the caller
  * says so for that note (`tooLarge.ts`) instead of failing the sync.
+ * ⭐ Since 0.7.4, a server that says `content_once` gets each note's text
+ * once (`serverCapabilities.ts`), and since the body sent is what is measured, the
+ * same budget then holds about twice the text.
  * 🧪 `src/sync/__tests__/requestSize.test.ts`.
  */
 
