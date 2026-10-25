@@ -6,8 +6,9 @@
  * that display() and setWarning() are deprecated. These tests pin what the move
  * must not lose:
  * - every setting the old tab had is still there, and searchable;
- * - every control writes through plugin.saveSettings(), which keeps the sync
- *   state in data.json (the framework's default writer would drop it);
+ * - every control writes through plugin.saveSettings(), which writes data.json
+ *   with what older versions on other devices keep there, and never this
+ *   device's own id or history (since 0.8.0, `plugin/persisted.ts`);
  * - every control key reads back what it wrote — an unknown key is ignored on
  *   write, so a typo in a key would silently save nothing;
  * - the journal folder list adds and removes, and saves both.
@@ -101,6 +102,8 @@ function makePlugin(state: PluginState = { tokens: false, account: null }) {
     internals._accessToken = state.tokens ? 'access' : '';
     internals._refreshToken = state.tokens ? 'refresh' : '';
     internals.saveData = jest.fn(async () => undefined);
+    // What data.json held for older versions: another device's id and history.
+    internals.passthrough = { deviceId: 'obsidian-from-another-device', syncState: { userId: 'her-id', files: {} } };
     internals.manifest = { version: '0.7.0' };
     internals.accountGuard = {
         getAccount: () => state.account,
@@ -236,7 +239,7 @@ describe('the settings tab', () => {
         expect(setTokens).not.toHaveBeenCalled();
     });
 
-    it('keeps the sync state when a setting changes', async () => {
+    it('keeps what data.json held for older versions, and writes nothing of this device', async () => {
         const p = makePlugin();
         const tab = renderTab(p);
 
@@ -245,7 +248,10 @@ describe('the settings tab', () => {
         expect(saveData(p)).toHaveBeenCalledTimes(1);
         const written = saveData(p).mock.calls[0][0] as Record<string, unknown>;
         expect(written.debugMode).toBe(true);
-        expect(written._syncState).toEqual(expect.objectContaining({ userId: 'her-id' }));
+        // ⛔ Not 'device-1', this device's own id: written here, it became the
+        // other device's on its next load (review F30).
+        expect(written.deviceId).toBe('obsidian-from-another-device');
+        expect(written._syncState).toEqual({ userId: 'her-id', files: {} });
     });
 
     it('stops the file watcher when Auto-sync is switched off', async () => {

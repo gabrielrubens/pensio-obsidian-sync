@@ -125,6 +125,10 @@ function detailsOf(error: unknown): RefusalDetails {
 /** Which limit refused it, in her words. Unknown when an older server did not say. */
 function busyReason(scope: string | undefined, where: string): string {
     switch (scope) {
+        // ⭐ This vault's own budget (Pensio since 2026-10-21, review F2): its
+        // requests are the only ones charged to it.
+        case 'client':
+            return `This vault has made more requests this hour than ${where} allows. Your other devices and apps are not affected.`;
         case 'account':
             return `Your ${where} account has made more requests this hour than ${where} allows, counting every device and app you connected.`;
         case 'network':

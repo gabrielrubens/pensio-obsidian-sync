@@ -18,6 +18,7 @@
 interface Claims {
     user_id?: unknown;
     family?: unknown;
+    device_id?: unknown;
 }
 
 function claims(token: string): Claims | null {
@@ -36,6 +37,12 @@ function claims(token: string): Claims | null {
 export function tokenUserId(token: string): string | null {
     const id = claims(token.trim())?.user_id;
     return typeof id === 'string' || typeof id === 'number' ? String(id) : null;
+}
+
+/** The device a token was minted for (`device_id`), or null when it names none. */
+export function tokenDeviceId(token: string): string | null {
+    const id = claims(token.trim())?.device_id;
+    return typeof id === 'string' && id ? id : null;
 }
 
 /** It reads as a Pensio token: three parts, and an account inside. */

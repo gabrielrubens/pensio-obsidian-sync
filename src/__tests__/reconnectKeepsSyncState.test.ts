@@ -37,11 +37,11 @@ function plugin(syncState: { userId: string | null } | null) {
     const p = new (PensioPlugin as unknown as new () => PensioPlugin)();
     const secrets: Record<string, string> = {};
     const internals = p as unknown as Record<string, unknown>;
-    internals.app = {
-        secretStorage: {
-            getSecret: (k: string) => secrets[k] ?? '',
-            setSecret: (k: string, v: string) => { secrets[k] = v; },
-        },
+    internals.app = {};
+    // This vault's tokens and history on this device (plugin/deviceState.ts).
+    internals.device = {
+        writeTokens: (t: { access: string; refresh: string }) => { secrets.access = t.access; secrets.refresh = t.refresh; },
+        saveState: jest.fn(async () => undefined),
     };
     internals.settings = { autoSync: false, apiUrl: 'https://pensio.app' };
     internals.apiClient = {

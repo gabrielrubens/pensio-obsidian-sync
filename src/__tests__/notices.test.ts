@@ -28,6 +28,8 @@
  * - a refresh with any status read as offline again → "a refresh that got an
  *   answer is not offline" RED;
  * - notify() not hiding the slot's last notice → "replaces its predecessor" RED.
+ * Re-checked on 0.8.0 (2026-10-21): no wording for the `client` scope → "names
+ * the limit" RED.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -153,6 +155,11 @@ describe('a failure, in plain words', () => {
         );
         expect(explained.next).toBe(`Nothing is lost. Try again after ${clockTime(now + 600_000)}.`);
         expect(explained.retryAt).toBe(now + 600_000);
+
+        const client = new HttpError('Rate limit exceeded.', 429, { scope: 'client', retryAfter: 600 });
+        expect(explainFailure(client, once).reason).toBe(
+            'This vault has made more requests this hour than Pensio allows. Your other devices and apps are not affected.'
+        );
 
         const network = new HttpError('Rate limit exceeded.', 429, { scope: 'network' });
         expect(explainFailure(network, once).reason).toBe('There have been too many connection attempts from your network this hour.');

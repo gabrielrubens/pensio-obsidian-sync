@@ -7,6 +7,20 @@ workflow publishes the section whose heading names the version, and refuses to
 publish a release without one. Releases before 0.5.0 are on
 [GitHub](https://github.com/gabrielrubens/pensio-obsidian-sync/releases).
 
+## 0.8.0
+
+- **Connect to Pensio stops saying "Waiting for your browser…" as soon as your browser answers.** After you cancelled, or Pensio refused, it went on saying so for five minutes.
+- **One busy vault no longer stops your other vaults and apps for the hour.** Pensio used to count every request from your account against one hourly allowance, so a vault sending a lot (a first sync of a large vault, say) left the others refused. Now each vault, watch and app has its own allowance. If this vault reaches its own, the notice says so, and that your other devices are not affected.
+- **A setting you change on one device stays changed.** In a vault synced between devices (Obsidian Sync, iCloud, Syncthing), the plugin on the other device wrote its own settings back within minutes. Now it saves them only when you change one, and picks up a change made on another device.
+- **No more "Session expired" after reinstalling the plugin, or on a second computer.** Each device now keeps its own id for the vault, instead of taking it from the vault's settings.
+- **A note you move just before quitting Obsidian is still moved.** The move used to be lost, and the note became a second entry the next time you edited it.
+- **A note you rename while it is first syncing keeps one entry.** It used to end up with two, one at each name.
+- **Renaming a note onto the name of one you deleted while Obsidian was closed no longer leaves a copy behind.** Pensio now says when that happens, and the plugin removes the entry the note left. This needs Pensio's next update too.
+- **A vault copied from another starts its own sync history,** so with Mirror delete on it no longer deletes the other vault's entries.
+- **Each vault keeps its connection under its own name,** so two vaults on one device never share one.
+- **The update moves things by itself.** A connected vault stays connected and nothing is sent again. If a vault shows Not connected after the update, press Connect to Pensio: the connection it held belonged to another vault on the same device.
+- **If your Pensio email address is not confirmed yet, the plugin says so,** and what to do: open the link Pensio emailed you, then press Connect to Pensio again. It used to say you had cancelled.
+
 ## 0.7.4
 
 - **Notes up to about 2 MB sync, twice the size they could before.** The plugin sent each note's text twice, so a note over about 1 MB was too large. Pensio now takes the text once, and the plugin sends it once as soon as Pensio says it can. A server that has not updated still gets it twice, as before.

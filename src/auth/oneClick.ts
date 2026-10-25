@@ -42,6 +42,8 @@ export interface ConnectResult {
 export type CallbackOutcome =
     | { kind: 'connected'; result: ConnectResult }
     | { kind: 'cancelled' }
+    /** Pensio would not approve: her email address is not confirmed yet. */
+    | { kind: 'unverified' }
     | { kind: 'not-ours' }
     | { kind: 'expired' }
     /** This approval already connected the vault: the link was opened twice. */
@@ -168,8 +170,9 @@ export class OneClickConnect {
         return `${base}/connect/obsidian/?${params.toString()}`;
     }
 
-    isWaiting(): boolean {
-        return this.pending.some(p => this.now() - p.startedAt < PENDING_TTL_MS);
+    /** A request started within `withinMs` still waits for the browser's answer. */
+    isWaiting(withinMs = PENDING_TTL_MS): boolean {
+        return this.pending.some(p => this.now() - p.startedAt < Math.min(withinMs, PENDING_TTL_MS));
     }
 
     /** obsidian://pensio-connect landed. Never throws for a callback that is
@@ -190,6 +193,12 @@ export class OneClickConnect {
         if (this.now() - pending.startedAt >= PENDING_TTL_MS) {
             spend();
             return { kind: 'expired' };
+        }
+        // ⭐ Not "cancelled" (review F32): she did not cancel, and the notice
+        // says what to do (core/views/obsidian_connect.py, `unverified_url`).
+        if (params.error === 'email_unverified') {
+            spend();
+            return { kind: 'unverified' };
         }
         if (params.error || !params.code) {
             spend();

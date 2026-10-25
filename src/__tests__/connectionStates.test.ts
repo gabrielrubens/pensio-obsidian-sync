@@ -38,9 +38,13 @@
  *   a redraw" RED;
  * - the couldn't-check card without Connect → "Connect to Pensio beside Try
  *   again" RED.
+ * Re-checked on 0.8.0 (2026-10-21, review F32): the card back on its own
+ * five-minute clock (the 0.7.4 code) → "stops waiting as soon as the browser
+ * answers" RED.
  */
 import { ConfirmationModal, Setting } from 'obsidian';
 import { AccountCheck } from '../accountCheck';
+import { OneClickConnect } from '../auth/oneClick';
 import { HttpError } from '../errors';
 import PensioPlugin from '../main';
 import { PensioSettingTab } from '../settings';
@@ -125,7 +129,13 @@ function makePlugin(state: FakePluginState, verify?: (options: { onError?: (e: u
             state.invalidated = true;
             return false;
         }),
-        startOneClickConnect: jest.fn(async () => undefined),
+        // The real requests, so the card reads what Obsidian would.
+        oneClick: new OneClickConnect(jest.fn(async () => ({ access: 'a', refresh: 'r' }))),
+        /** The page the last Connect opened. */
+        opened: '',
+        startOneClickConnect: jest.fn(async () => {
+            plugin.opened = await plugin.oneClick.start('https://pensio.app', 'vault', 'Obsidian');
+        }),
         syncNow: jest.fn(async () => undefined),
         logout: jest.fn(async () => {
             state.tokens = false;
@@ -294,6 +304,17 @@ describe('the status card', () => {
 
         expect(plugin.startOneClickConnect).toHaveBeenCalled();
         expect(card().buttons[0].text).toBe('Waiting for your browser…');
+    });
+
+    it('stops waiting as soon as the browser answers, whatever the answer', async () => {
+        const { tab, plugin } = open(nothing());
+        await card().buttons[0].click?.();
+        const state = new URL(plugin.opened).searchParams.get('state') ?? '';
+
+        await plugin.oneClick.handleCallback({ error: 'email_unverified', state });
+        tab.update();                               // main.ts, after every answer
+
+        expect(card().buttons[0].text).toBe('Connect to Pensio');
     });
 });
 

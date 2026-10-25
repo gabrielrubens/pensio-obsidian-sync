@@ -143,7 +143,7 @@ People/
 └── Mom.md
 ```
 
-Each file becomes a [relationship profile](https://pensio.app/features/relationships/) on Pensio. The person's name is taken from the `title` frontmatter key, or the filename if not set. You can add any notes about the person in the file body.
+Each file becomes a [relationship profile](https://pensio.app/features/relationships/) on Pensio, **named after the file** — the same name your `[[links]]` to it use. A `title` property is not used for the name; put any other names in `aliases`. You can add any notes about the person in the file body.
 
 #### Person frontmatter
 
@@ -151,7 +151,6 @@ Add a `relationship` field to categorize the person:
 
 ```yaml
 ---
-title: Sarah
 relationship: close_friend
 birthday: 1990-05-15
 aliases:
@@ -205,10 +204,11 @@ All of this happens on the web — your markdown files in Obsidian stay untouche
 |---|---|
 | **Transport** | All communication over HTTPS |
 | **Authentication** | **Connect to Pensio** (approved in your browser, PKCE) or a one-time setup code → per-device JWT family; short-lived access tokens, refresh tokens renewed automatically (sliding reissue) |
-| **Token storage** | Obsidian SecretStorage, write-verified — backed by the OS keychain on desktop; app-local (never inside your vault files, never synced with the vault) on mobile |
+| **Token storage** | Obsidian SecretStorage, write-verified — backed by the OS keychain on desktop; app-local (never inside your vault files, never synced with the vault) on mobile. Each vault keeps its own, under its own name |
+| **What stays on each device** | The vault's device id and its sync history, never in the synced `data.json`, which holds only your settings |
 | **Data sent** | Markdown content, file paths, timestamps from configured folders only |
 | **Data NOT sent** | Files outside sync folders, `.obsidian` config, plugin settings, vault structure |
-| **Max file size** | 1 MB per file (larger files are skipped) |
+| **Max note size** | About 2 MB of text per note. A larger note is named on the status card and not synced |
 
 ## Documentation
 

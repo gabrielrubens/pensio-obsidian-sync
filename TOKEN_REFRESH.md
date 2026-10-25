@@ -71,7 +71,13 @@ available under **Advanced** for self-hosted servers.
 
 - Tokens live in **Obsidian SecretStorage** — backed by the OS keychain on
   desktop, app-local storage on mobile — never in `data.json`, so they can't
-  leak through vault syncing.
+  leak through vault syncing. Since 0.8.0 their names carry this vault's
+  device id (`pensio-refresh-token-<device id>`), so two vaults never share
+  them (`src/plugin/deviceState.ts`).
+- The **device id** every refresh sends lives in this vault's local storage on
+  this device (0.8.0), never in the synced `data.json`: before, a reinstall or
+  a second machine could get an id the tokens were not minted for, and every
+  refresh failed as *Session expired*.
 - Every save is **verified by read-back** (with one retry), and the plugin
   flushes tokens once more in `onunload()` as a belt-and-braces measure
   against opaque flush timing.

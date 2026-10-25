@@ -5,30 +5,19 @@ import { AccountCheck } from './accountCheck';
 import { AccountGuard } from './auth/accountGuard';
 import { tokenUserId } from './auth/identity';
 import { CALLBACK_ACTION, OneClickConnect } from './auth/oneClick';
+import { VerifyOptions, verifyAccount } from './plugin/accountSafety';
 import { debugLog, setDebugMode } from './logger';
-import { clearNotice, explainFailure, FailureContext, NOTICE_MS, notify, notifyFailure } from './notices';
+import { clearNotice, FailureContext, NOTICE_MS, notify, notifyFailure } from './notices';
+import { registerCommands, runSyncNow } from './plugin/commands';
+import { DisconnectOutcome, noticeForCallback, noticeForDisconnect } from './plugin/connectNotices';
+import { DeviceIO, DeviceStore, LEGACY_SECRET_NAMES, NO_TOKENS } from './plugin/deviceState';
+import { parsePersisted, Passthrough, persistable } from './plugin/persisted';
+import { readTokens } from './plugin/tokenStore';
+import { createOneClick, createSyncStatus, saveOnQuit, wireSyncEngine } from './plugin/wiring';
 import { PensioSettingTab } from './settings';
 import { SyncEngine } from './sync/engine';
-import { quotaDayKey, quotaNoticeMessage, quotaSummaryLine, shouldNotifyQuota } from './sync/quotaNotice';
-import { tooLargeLine } from './sync/tooLarge';
 import { SyncStatus } from './syncStatus';
-import { DEFAULT_SETTINGS, JournalFolderMapping, PensioSettings, ProcessingStatus, SyncStateData } from './types';
-
-/** Pre-0.3.0 folder mappings carried extra per-folder fields. */
-interface LegacyFolderMapping extends JournalFolderMapping {
-    entryType?: string;
-    label?: string;
-}
-
-/**
- * Shape of the plugin's persisted data.json. Settings fields plus the sync
- * state and two legacy plaintext-token keys migrated to SecretStorage.
- */
-interface PersistedData extends Partial<PensioSettings> {
-    _syncState?: SyncStateData | null;
-    apiToken?: string;
-    refreshToken?: string;
-}
+import { PensioSettings, SyncStateData } from './types';
 
 export default class PensioPlugin extends Plugin {
     settings: PensioSettings;
@@ -43,6 +32,10 @@ export default class PensioPlugin extends Plugin {
     accountCheck: AccountCheck;
     private settingTab: PensioSettingTab | null = null;
     private _syncState: SyncStateData | null = null;
+    /** This vault's own id, tokens and sync history on this device (plugin/deviceState.ts). */
+    private device: DeviceStore;
+    /** What data.json keeps for older versions on other devices (plugin/persisted.ts). */
+    private passthrough: Passthrough = { deviceId: '', syncState: null };
     /** In-memory token values (persisted in SecretStorage, never in data.json) */
     private _accessToken: string = '';
     private _refreshToken: string = '';
@@ -53,25 +46,33 @@ export default class PensioPlugin extends Plugin {
      */
     private replacedRefresh: string = '';
 
-    private static readonly SECRET_ACCESS_TOKEN = 'pensio-access-token';
-    private static readonly SECRET_REFRESH_TOKEN = 'pensio-refresh-token';
-
     async onload() {
-        // Load settings
-        await this.loadSettings();
+        const loaded = parsePersisted(await this.loadData());
+        this.settings = loaded.settings;
+        this.passthrough = loaded.passthrough;
         setDebugMode(this.settings.debugMode);
 
-        // Every install owns a stable device id — the refresh and pair
-        // endpoints require one (per-device revocation), and older versions
-        // never generated it, which made every refresh fail validation.
-        await this.ensureDeviceId();
-
-        // Load tokens from SecretStorage (encrypted at rest)
-        await this.loadTokens();
+        // ⭐ The device id, the tokens and the sync history are this vault's
+        // on this device, never synced (review CRIT-6, F30, CRIT-2). The
+        // first run settles what 0.7 kept in data.json (plugin/deviceState.ts).
+        const opened = await DeviceStore.open(this.deviceIO(), this.manifest.dir ?? '', () => ({
+            deviceId: loaded.passthrough.deviceId,
+            syncState: loaded.passthrough.syncState,
+            tokens: loaded.legacyTokens ?? readTokens(this.app.secretStorage, LEGACY_SECRET_NAMES, NO_TOKENS),
+            fromSharedNames: !loaded.legacyTokens,
+        }));
+        this.device = opened.store;
+        this.settings.deviceId = opened.store.deviceId;
+        this._accessToken = opened.tokens.access;
+        this._refreshToken = opened.tokens.refresh;
+        this._syncState = opened.syncState;
+        // Plaintext tokens a pre-SecretStorage version left in data.json are
+        // in SecretStorage now: take them out of the file.
+        if (loaded.legacyTokens) await this.saveData(persistable(this.settings, this.passthrough));
 
         // What the sync is doing, for the status bar, the notices and the
         // status card. Built first: the callbacks below report to it.
-        this.syncStatus = this.createSyncStatus();
+        this.syncStatus = createSyncStatus(this);
         this.accountCheck = new AccountCheck(
             (onError) => this.verifyAccountBeforeSync({ onError }),
             () => this.failureContext(),
@@ -120,19 +121,9 @@ export default class PensioPlugin extends Plugin {
             this.syncEngine.restoreState(this._syncState);
         }
 
-        // Surface the free-tier analysis quota. Auto-sync is on by default and
-        // silent, so without this a first import of a large vault finishes
-        // with no indication that analysis will take weeks.
-        this.syncEngine.onProcessingStatus = (status) => this.handleProcessingStatus(status);
-
-        // An automatic sync reports how it ended; one she asked for is
-        // reported by syncNow.
-        this.syncEngine.onSyncFailed = (error) => this.syncStatus.failed(error, { asked: false });
-        this.syncEngine.onSyncSucceeded = (contacted) => this.onSyncReachedPensio(contacted);
-        // A problem on screen, or an account nobody has checked, makes a sync
-        // with nothing to send ask Pensio anyway (review F26).
-        this.syncEngine.needsContact = () =>
-            this.syncStatus.getProblem() !== null || this.accountGuard.getAccount() === null;
+        // How the engine reports: the quota, failures, successes (plugin/wiring.ts).
+        wireSyncEngine(this);
+        saveOnQuit(this);
 
         // The network came back: if the account was never checked, check it.
         this.registerDomEvent(window, 'online', () => {
@@ -150,21 +141,8 @@ export default class PensioPlugin extends Plugin {
         this.settingTab = new PensioSettingTab(this.app, this);
         this.addSettingTab(this.settingTab);
 
-        // One-click connect: the browser hands the code back at
-        // obsidian://pensio-connect (src/auth/oneClick.ts). The exchange sends
-        // the refresh token this vault holds, so the connection it replaces ends.
-        this.oneClick = new OneClickConnect(
-            (code, verifier, deviceId) =>
-                this.apiClient.connectWithCode(code, verifier, deviceId, this.previousRefresh()),
-            {
-                // This device only, never synced: a reload, an update or a
-                // second press must not orphan an approval (review F24).
-                store: {
-                    load: () => this.app.loadLocalStorage('pensio-one-click') as unknown,
-                    save: (value: unknown) => this.app.saveLocalStorage('pensio-one-click', value),
-                },
-            },
-        );
+        // One-click connect (plugin/wiring.ts, src/auth/oneClick.ts).
+        this.oneClick = createOneClick(this);
         this.registerObsidianProtocolHandler(CALLBACK_ACTION, (params) => {
             void this.finishOneClickConnect(params);
         });
@@ -190,14 +168,6 @@ export default class PensioPlugin extends Plugin {
         }
     }
 
-    /** A sync ended with nothing failing; `contacted`: Pensio answered it. */
-    private onSyncReachedPensio(contacted: boolean): void {
-        this.syncStatus.synced(contacted);
-        if (!contacted) return;
-        // Pensio answers again: an account nobody could check gets checked now.
-        if (!this.accountGuard.getAccount()) void this.accountCheck.run();
-    }
-
     onunload() {
         this.syncEngine.stopWatching();
         // Flush the current tokens one last time — SecretStorage write timing
@@ -206,71 +176,45 @@ export default class PensioPlugin extends Plugin {
         void this.saveTokens();
     }
 
-    async loadSettings() {
-        const rawData = ((await this.loadData()) ?? {}) as PersistedData;
-
-        // Extract sync state before merging with settings defaults
-        this._syncState = rawData._syncState ?? null;
-        const settingsData: PersistedData = { ...rawData };
-        delete settingsData._syncState;
-
-        // Migrate legacy plaintext tokens → SecretStorage (one-time)
-        if (settingsData.apiToken || settingsData.refreshToken) {
-            debugLog('Migrating plaintext tokens to SecretStorage');
-            this._accessToken = settingsData.apiToken || '';
-            this._refreshToken = settingsData.refreshToken || '';
-            delete settingsData.apiToken;
-            delete settingsData.refreshToken;
-            // Save tokens to SecretStorage and clean data.json in background
-            // (loadTokens below will prefer these in-memory values)
-            window.setTimeout(() => {
-                void (async () => {
-                    await this.saveTokens();
-                    await this.saveData({ ...this.settings, _syncState: this._syncState });
-                })();
-            }, 0);
-        }
-
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, settingsData);
-
-        // Migrate old folder mappings that had entryType/label fields (pre-0.3.0)
-        const folders = this.settings.journalFolders as LegacyFolderMapping[];
-        if (folders?.length > 0 && folders[0].entryType !== undefined) {
-            this.settings.journalFolders = folders.map(
-                (m): JournalFolderMapping => ({ folder: m.folder })
-            );
-        }
+    /** Obsidian's storage, as the device store reads and writes it. */
+    private deviceIO(): DeviceIO {
+        const adapter = this.app.vault.adapter;
+        return {
+            loadLocal: (key) => this.app.loadLocalStorage(key) as unknown,
+            saveLocal: (key, value) => this.app.saveLocalStorage(key, value),
+            read: async (path) => (await adapter.exists(path)) ? adapter.read(path) : null,
+            write: async (path, text) => {
+                const dir = path.slice(0, path.lastIndexOf('/'));
+                if (dir && !(await adapter.exists(dir))) await adapter.mkdir(dir);
+                await adapter.write(path, text);
+            },
+            secrets: this.app.secretStorage,
+        };
     }
 
     /**
-     * Make sure this install has a stable device id, generating and
-     * persisting one if missing. Returns the id.
+     * data.json changed on disk: another device changed a setting, and a sync
+     * service brought it here. ⛔ Until 0.8.0 the plugin did not listen, and
+     * its next sync wrote its own copy back over the change (review CRIT-6).
+     * ⭐ Applied to the same settings object, so the sync sees the change as
+     * one made here: a folder setting that changed defers mirror delete
+     * (sync/deletes.ts::MirrorGate). The device id stays this device's.
      */
-    async ensureDeviceId(): Promise<string> {
-        if (!this.settings.deviceId) {
-            const bytes = new Uint8Array(8);
-            crypto.getRandomValues(bytes);
-            const suffix = Array.from(bytes)
-                .map((b: number) => b.toString(16).padStart(2, '0'))
-                .join('');
-            this.settings.deviceId = `obsidian-${suffix}`;
-            const dataToSave: Record<string, unknown> = { ...this.settings };
-            if (this._syncState) {
-                dataToSave._syncState = this._syncState;
-            }
-            await this.saveData(dataToSave);
-            debugLog('Generated device id', this.settings.deviceId);
-        }
-        return this.settings.deviceId;
+    async onExternalSettingsChange(): Promise<void> {
+        const loaded = parsePersisted(await this.loadData());
+        this.passthrough = loaded.passthrough;
+        Object.assign(this.settings, loaded.settings, { deviceId: this.device.deviceId });
+        this.applySettings();
+        this.settingTab?.update();
     }
 
+    /** Settings changed here: write data.json, which is all it holds now. */
     async saveSettings() {
-        // Preserve sync state when saving settings
-        const dataToSave: Record<string, unknown> = { ...this.settings };
-        if (this._syncState) {
-            dataToSave._syncState = this._syncState;
-        }
-        await this.saveData(dataToSave);
+        await this.saveData(persistable(this.settings, this.passthrough));
+        this.applySettings();
+    }
+
+    private applySettings(): void {
         setDebugMode(this.settings.debugMode);
 
         // Update API client with new settings
@@ -284,76 +228,7 @@ export default class PensioPlugin extends Plugin {
     }
 
     registerCommands() {
-        // Manual sync command
-        this.addCommand({
-            id: 'sync-now',
-            name: 'Sync now',
-            callback: () => this.syncNow()
-        });
-
-
-        // Force sync all files (ignore change detection)
-        this.addCommand({
-            id: 'force-sync-all',
-            name: 'Force sync all files',
-            callback: () => this.syncNow({ force: true })
-        });
-
-        // Sync current file
-        this.addCommand({
-            id: 'sync-current-file',
-            name: 'Sync current file',
-            callback: async () => {
-                const file = this.app.workspace.getActiveFile();
-                if (!file) {
-                    notify('Open a note first, then sync it.');
-                    return;
-                }
-                if (!file.path.endsWith('.md')) {
-                    notify('Only Markdown notes sync to Pensio.');
-                    return;
-                }
-                await this.syncNow({ file });
-            }
-        });
-
-        // Check sync status
-        this.addCommand({
-            id: 'check-sync-status',
-            name: 'Check sync status',
-            callback: async () => {
-                try {
-                    const status = await this.apiClient.getSyncStatus();
-                    const account = this.accountGuard.getAccount();
-                    const accountLine = account ? `Account: ${account.email}\n` : '';
-                    const trackedFiles = this.syncEngine.getTrackedFileCount();
-                    // Prefer the value this call just fetched; fall back to
-                    // the last sync's reading on older servers.
-                    const quotaLine = quotaSummaryLine(
-                        status.processing_status ?? this.syncEngine.getLastProcessingStatus()
-                    );
-                    notify(
-                        'sync status\n' +
-                        `${accountLine}` +
-                        `Server entries: ${status.total_entries}\n` +
-                        `Local tracked files: ${trackedFiles}` +
-                        (quotaLine ? `\n${quotaLine}` : '')
-                    );
-                } catch (error) {
-                    notifyFailure('Checking the sync status', error, this.failureContext(), 'connection');
-                    console.error('Status error:', error);
-                }
-            }
-        });
-
-        // Disconnect. The id stays 'logout' so a hotkey bound to it keeps working.
-        this.addCommand({
-            id: 'logout',
-            name: 'Disconnect from Pensio',
-            callback: async () => {
-                await this.logout();
-            }
-        });
+        registerCommands(this);
     }
 
     /**
@@ -362,40 +237,7 @@ export default class PensioPlugin extends Plugin {
      * dismisses it (SyncStatus).
      */
     async syncNow(options: { force?: boolean; file?: TFile } = {}): Promise<void> {
-        // ⛔ Before 0.7.1 a sync with nothing connected did nothing visible.
-        if (!this._accessToken || !this._refreshToken) {
-            notify('This vault isn’t connected. Open the plugin’s settings and press Connect to Pensio.', NOTICE_MS.failure);
-            return;
-        }
-        if (this.apiClient.isAuthInvalidated()) {
-            notify('The connection to Pensio has stopped. Open the plugin’s settings and press Connect to Pensio.', NOTICE_MS.failure);
-            return;
-        }
-        this.syncStatus.syncing();
-        try {
-            const verified = await this.verifyAccountBeforeSync({
-                onError: (error) => this.syncStatus.failed(error, { asked: true }),
-            });
-            if (!verified) {
-                this.syncStatus.idle();
-                return;
-            }
-            if (options.file) this.syncEngine.markDirty(options.file.path);
-            const result = await this.syncEngine.syncAll(options.force ?? false, { asked: true });
-            this.syncStatus.succeeded(`${result.synced} synced`);
-            const tooLarge = tooLargeLine(result.tooLarge);
-            if (options.file && result.tooLarge.includes(options.file.path)) {
-                notify(`${options.file.name} is too large to sync. Split it into smaller notes to sync it.`);
-            } else if (options.file) {
-                notify(result.synced > 0 ? `${options.file.name} synced.` : `${options.file.name} was already up to date.`);
-            } else {
-                notify(`${options.force ? 'Full sync' : 'Sync'} done. ${result.synced} synced, ${result.skipped} unchanged.` +
-                    (tooLarge ? ` ${tooLarge}.` : ''));
-            }
-        } catch (error) {
-            this.syncStatus.failed(error, { asked: true });
-            console.error('Sync error:', error);
-        }
+        await runSyncNow(this, options);
     }
 
     /**
@@ -415,16 +257,6 @@ export default class PensioPlugin extends Plugin {
         };
     }
 
-    private createSyncStatus(): SyncStatus {
-        return new SyncStatus({
-            statusBar: () => this.statusBarItem ?? null,
-            isAuthInvalidated: () => this.apiClient?.isAuthInvalidated() ?? false,
-            trackedCount: () => this.syncEngine?.getTrackedFileCount() ?? 0,
-            tooLarge: () => this.syncEngine?.getTooLargeNotes() ?? [],
-            failureContext: () => this.syncFailureContext(),
-        });
-    }
-
     /**
      * Disconnect: stop this vault's connection on Pensio, then clear tokens,
      * sync state, and account cache here. Called by both the command and the
@@ -435,10 +267,8 @@ export default class PensioPlugin extends Plugin {
      * connection is then stoppable from Connected apps on the web.
      */
     async logout(): Promise<void> {
-        // ⭐ The notice says what happened (review F35): 0.7.0 said Pensio
-        // "could not be reached" when it was reached and refused, and when
-        // nothing was ever asked.
-        let outcome: 'stopped' | 'already-ended' | 'nothing' | { failed: unknown } = 'nothing';
+        // ⭐ The notice says what happened (review F35; plugin/connectNotices.ts).
+        let outcome: DisconnectOutcome = 'nothing';
         if (this._accessToken && this._refreshToken) {
             if (this.apiClient.isAuthInvalidated()) {
                 outcome = 'already-ended';
@@ -461,25 +291,14 @@ export default class PensioPlugin extends Plugin {
         this.syncEngine.clearState();
         this.accountGuard.clearAccount();
         this._syncState = null;
+        await this.device.saveState(null);
         this.replacedRefresh = '';
         this.accountCheck?.reset();
-        await this.saveSettings();
+        // Nothing to sync with now: stop the watcher and the timer.
+        this.restartAutoSync();
         this.syncStatus?.reset();
         clearNotice('connection');
-        if (outcome === 'stopped') {
-            notify('Disconnected. This vault no longer syncs.');
-        } else if (outcome === 'already-ended') {
-            notify('Disconnected. This connection had already ended on Pensio.');
-        } else if (outcome === 'nothing') {
-            notify('Disconnected. There was no connection to stop.');
-        } else {
-            const { reason } = explainFailure(outcome.failed, this.failureContext());
-            notify(
-                `Disconnected here, but Pensio didn’t stop the connection there. ${reason} ` +
-                'Stop it on the web too: Settings \u2192 Connected apps.',
-                NOTICE_MS.failure,
-            );
-        }
+        noticeForDisconnect(outcome, this.failureContext());
     }
 
     /**
@@ -519,9 +338,8 @@ export default class PensioPlugin extends Plugin {
 
     /** Connect to Pensio: open the approval page in her browser. */
     async startOneClickConnect(): Promise<void> {
-        const deviceId = await this.ensureDeviceId();
         const url = await this.oneClick.start(
-            this.settings.apiUrl, deviceId, this.deviceName(), this.app.vault.getName()
+            this.settings.apiUrl, this.settings.deviceId, this.deviceName(), this.app.vault.getName()
         );
         window.open(url);
         notify('Approve this vault in your browser, then come back here.', 10000, 'connection');
@@ -531,30 +349,17 @@ export default class PensioPlugin extends Plugin {
     private async finishOneClickConnect(params: Record<string, string | undefined>): Promise<void> {
         try {
             const outcome = await this.oneClick.handleCallback(params);
-            switch (outcome.kind) {
-                case 'connected':
-                    await this.adoptConnection(outcome.result);
-                    return;
-                case 'cancelled':
-                    notify('Connecting was cancelled in the browser. Nothing changed here.', NOTICE_MS.info, 'connection');
-                    return;
-                case 'expired':
-                    notify('That request expired. Press Connect to Pensio in the settings again.', NOTICE_MS.failure, 'connection');
-                    return;
-                case 'already-used':
-                    notify('That approval was already used. This vault is connected.', NOTICE_MS.info, 'connection');
-                    return;
-                case 'not-ours':
-                    notify(
-                        'Pensio couldn’t match this approval to a Connect request in this vault. ' +
-                        'Press Connect to Pensio again, and approve in the newest browser tab.',
-                        NOTICE_MS.failure, 'connection',
-                    );
-                    return;
+            if (outcome.kind === 'connected') {
+                await this.adoptConnection(outcome.result);
+            } else {
+                noticeForCallback(outcome);
             }
         } catch (error) {
             notifyFailure('Connecting', error, this.failureContext(), 'connection');
             console.error('One-click connect failed:', error);
+        } finally {
+            // ⭐ However it ended, the card stops waiting now (review F32).
+            this.settingTab?.update();
         }
     }
 
@@ -590,93 +395,16 @@ export default class PensioPlugin extends Plugin {
         this.settingTab?.update();
     }
 
-    /**
-     * Tell the user, at most once a day, that the free daily analysis cap is
-     * spent and roughly how long the backlog will take.
-     *
-     * Deliberately once per quota day: sync runs on a five-minute timer, and
-     * "you are still over quota" is an unchanging state, not news. Repeating
-     * it every tick is the same mistake the server-side throttle event made.
-     */
-    private handleProcessingStatus(status: ProcessingStatus): void {
-        const day = quotaDayKey();
-        if (!shouldNotifyQuota(status, this.syncEngine.getLastQuotaNoticeDay())) {
-            return;
-        }
-
-        this.syncEngine.markQuotaNoticeShown(day);
-
-        const notice = notify(quotaNoticeMessage(status), 20000);
-        // messageEl is absent under the test mock — optional chaining keeps the
-        // message itself working even if the click target is unavailable.
-        const apiUrl = serverUrl(this.settings.apiUrl);
-        (notice as { messageEl?: HTMLElement })?.messageEl?.addEventListener('click', () => {
-            window.open(`${apiUrl}/pricing/`);
-        });
-    }
-
     // ========================================================================
     // Account Safety
     // ========================================================================
 
-    /**
-     * Verify account identity before any sync operation.
-     * Returns true if safe to proceed, false if sync should be aborted.
-     *
-     * On account switch: clears sync state, stamps new userId, persists.
-     * On first connection: stamps userId, persists.
-     */
-    async verifyAccountBeforeSync(options: {
-        reconnectOn401?: boolean;
-        /** Report a failure here instead of in a notice. */
-        onError?: (error: unknown) => void;
-    } = {}): Promise<boolean> {
-        // Skip verification if not authenticated
-        if (!this._accessToken || !this._refreshToken) {
-            return false;
-        }
-        if (this.apiClient.isAuthInvalidated()) {
-            return false;
-        }
-
-        const result = await this.accountGuard.verify(
-            this.apiClient,
-            this._syncState,
-        );
-
-        switch (result.status) {
-            case 'ok':
-                return true;
-
-            case 'first-connection':
-                // Stamp userId on sync state for future verification
-                this.syncEngine.setUserId(result.account.id);
-                await this.saveSyncState(this.syncEngine.getState());
-                return true;
-
-            case 'account-switched':
-                // Clear everything and start fresh for the new account
-                this.syncEngine.clearState();
-                this.syncEngine.setUserId(result.account.id);
-                await this.saveSyncState(this.syncEngine.getState());
-                return true;
-
-            case 'error':
-                // Only when the person asked (Test connection): a 401 the
-                // refresh could not cure means this connection is gone, so
-                // show the reconnect state instead of a bare failure.
-                if (result.unauthorized && options.reconnectOn401) {
-                    this.apiClient.markAuthInvalidated();
-                    return false;
-                }
-                // Block sync on error — fail safe, not fail open
-                {
-                    const error = result.error ?? new Error(result.message);
-                    if (options.onError) options.onError(error);
-                    else notifyFailure('Sync', error, this.failureContext());
-                }
-                return false;
-        }
+    /** Verify account identity before any sync operation (plugin/accountSafety.ts). */
+    async verifyAccountBeforeSync(options: VerifyOptions = {}): Promise<boolean> {
+        return verifyAccount(this, {
+            syncState: () => this._syncState,
+            saveSyncState: (state) => this.saveSyncState(state),
+        }, options);
     }
 
     /** Forget what was synced: the next sync checks every note again. */
@@ -692,48 +420,13 @@ export default class PensioPlugin extends Plugin {
     // ========================================================================
 
     /**
-     * Load tokens from Obsidian's SecretStorage (encrypted at rest).
-     * Called once during onload, after loadSettings (which may migrate legacy tokens).
-     */
-    private async loadTokens(): Promise<void> {
-        // If migration already populated in-memory tokens, skip SecretStorage read
-        if (this._accessToken && this._refreshToken) return;
-
-        try {
-            this._accessToken = this.app.secretStorage.getSecret(PensioPlugin.SECRET_ACCESS_TOKEN) || '';
-            this._refreshToken = this.app.secretStorage.getSecret(PensioPlugin.SECRET_REFRESH_TOKEN) || '';
-        } catch (error) {
-            console.error('Failed to load tokens from SecretStorage:', error);
-        }
-    }
-
-    /**
      * Save current in-memory tokens to SecretStorage, verified by read-back.
      * Also called by the onTokensChanged callback after refresh. Losing this
      * write used to brick the pairing (the server no longer blacklists the
      * predecessor, so a lost write is recoverable — but still verify).
      */
     async saveTokens(): Promise<void> {
-        const write = () => {
-            this.app.secretStorage.setSecret(PensioPlugin.SECRET_ACCESS_TOKEN, this._accessToken);
-            this.app.secretStorage.setSecret(PensioPlugin.SECRET_REFRESH_TOKEN, this._refreshToken);
-        };
-        const verified = () =>
-            (this.app.secretStorage.getSecret(PensioPlugin.SECRET_ACCESS_TOKEN) || '') === this._accessToken &&
-            (this.app.secretStorage.getSecret(PensioPlugin.SECRET_REFRESH_TOKEN) || '') === this._refreshToken;
-
-        try {
-            write();
-            if (!verified()) {
-                debugLog('SecretStorage read-back mismatch — retrying token save');
-                write();
-                if (!verified()) {
-                    console.error('Pensio: token save could not be verified — tokens may not survive a restart');
-                }
-            }
-        } catch (error) {
-            console.error('Failed to save tokens to SecretStorage:', error);
-        }
+        this.device.writeTokens({ access: this._accessToken, refresh: this._refreshToken });
     }
 
     /** Public accessors for tokens (used by settings tab) */
@@ -777,13 +470,13 @@ export default class PensioPlugin extends Plugin {
     }
 
     /**
-     * Save sync state alongside settings in data.json.
-     * Called by the SyncEngine after successful sync operations.
+     * Save the sync history, on this device only (plugin/deviceState.ts).
+     * Called by the SyncEngine after successful sync operations. ⛔ Never
+     * data.json: writing it on every sync is what overwrote a setting changed
+     * on another device (review CRIT-6).
      */
     private async saveSyncState(state: SyncStateData): Promise<void> {
         this._syncState = state;
-        const dataToSave: Record<string, unknown> = { ...this.settings };
-        dataToSave._syncState = state;
-        await this.saveData(dataToSave);
+        await this.device.saveState(state);
     }
 }

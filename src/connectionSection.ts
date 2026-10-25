@@ -12,7 +12,7 @@ const DOCS_URL = 'https://pensio.app/features/obsidian-sync/';
 const ISSUES_URL = 'https://github.com/gabrielrubens/pensio-obsidian-sync/issues';
 /** ⛔ Pensio's help pages quote this label in every state: keep it whole. */
 const CONNECT = 'Connect to Pensio';
-/** How long a pressed Connect waits for the browser: a setup code's life. */
+/** How long the card says it is waiting for the browser: a setup code's life. */
 const WAIT_FOR_BROWSER_MS = 5 * 60 * 1000;
 const TONES = ['ok', 'warn', 'off', 'pending'] as const;
 
@@ -51,8 +51,7 @@ const TONES = ['ok', 'warn', 'off', 'pending'] as const;
  * definitions are built (Obsidian builds them again for search indexing).
  */
 export class ConnectionSection {
-    /** Connect to Pensio was pressed: when, and for which tokens. */
-    private waitingSince: number | null = null;
+    /** The tokens held when Connect to Pensio was pressed. */
     private waitingFor: string | null = null;
     private syncing = false;
     /** What the card added outside the row's own parts, taken away on every redraw. */
@@ -291,10 +290,16 @@ export class ConnectionSection {
     // Connecting
     // ------------------------------------------------------------------
 
+    /**
+     * Waiting while the request she started has had no answer. ⛔ 0.7.4 kept
+     * its own five-minute clock, so after a cancel, a refusal or an email not
+     * yet confirmed the card went on saying it was waiting (review F32). The
+     * request itself now says: any answer from the browser ends it. And a
+     * connection made another way (a setup code) ends the wait too.
+     */
     private waitingForBrowser(): boolean {
-        return this.waitingSince !== null
-            && Date.now() - this.waitingSince < WAIT_FOR_BROWSER_MS
-            && this.waitingFor === this.plugin.getRefreshToken();
+        return this.waitingFor === this.plugin.getRefreshToken()
+            && this.plugin.oneClick.isWaiting(WAIT_FOR_BROWSER_MS);
     }
 
     /** Connect to Pensio: one click, approved in the browser. */
@@ -304,7 +309,6 @@ export class ConnectionSection {
         button.onClick(async () => {
             try {
                 await this.plugin.startOneClickConnect();
-                this.waitingSince = Date.now();
                 this.waitingFor = this.plugin.getRefreshToken();
                 this.redraw();
             } catch (error) {
@@ -356,9 +360,8 @@ export class ConnectionSection {
                             button.setDisabled(true);
                             button.setButtonText('Connecting…');
 
-                            const deviceId = await this.plugin.ensureDeviceId();
                             const result = await this.plugin.apiClient.pair(
-                                code, deviceId, this.plugin.deviceName(), this.plugin.previousRefresh()
+                                code, this.plugin.settings.deviceId, this.plugin.deviceName(), this.plugin.previousRefresh()
                             );
                             this.setupCode = '';
                             await this.plugin.adoptConnection(result);

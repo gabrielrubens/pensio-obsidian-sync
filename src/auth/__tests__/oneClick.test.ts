@@ -17,6 +17,12 @@
  * - restore() ignoring the store → "a reload keeps" RED;
  * - not recording `used` → "a link opened twice" RED;
  * - spending the request on every failure → "a passing failure keeps" RED.
+ *
+ * ⭐ 0.8.0 (review F32): an email not yet confirmed has its own answer, not
+ * "cancelled", and the card asks how long a request has waited.
+ * Sabotage-checked (2026-10-21), each alone then restored:
+ * - no `email_unverified` branch → "an email not yet confirmed" RED;
+ * - isWaiting() ignoring its window → "waits only as long as asked" RED.
  */
 import { createHash } from 'crypto';
 import { challengeFor, OneClickConnect, PENDING_TTL_MS } from '../oneClick';
@@ -157,6 +163,28 @@ describe('OneClickConnect', () => {
         expect(outcome.kind).toBe('cancelled');
         expect(exchange).not.toHaveBeenCalled();
         expect(connect.isWaiting()).toBe(false);
+    });
+
+    it('an email not yet confirmed ends the request with its own answer', async () => {
+        const { connect, exchange } = connector();
+        const state = query(await connect.start('https://pensio.app', 'vault', 'Obsidian')).get('state') ?? '';
+
+        const outcome = await connect.handleCallback({ error: 'email_unverified', state });
+
+        expect(outcome.kind).toBe('unverified');
+        expect(exchange).not.toHaveBeenCalled();
+        expect(connect.isWaiting()).toBe(false);
+    });
+
+    it('waits only as long as asked', async () => {
+        let now = 1_000;
+        const { connect } = connector(() => now);
+        await connect.start('https://pensio.app', 'vault', 'Obsidian');
+
+        now += 5 * 60 * 1000;
+
+        expect(connect.isWaiting(5 * 60 * 1000)).toBe(false);
+        expect(connect.isWaiting()).toBe(true);
     });
 
     it('a request left waiting too long is not completed', async () => {

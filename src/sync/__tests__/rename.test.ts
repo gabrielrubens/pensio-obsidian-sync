@@ -21,9 +21,26 @@
  *   "before the move was sent" RED;
  * - processDeletes sending to the entries section only → "before the move was
  *   sent" RED and "falls back to delete + create" RED.
+ *
+ * 🧪 Also sabotage-checked 2026-10-21: renames sent before deletes -> RED on
+ *   "frees a deleted path before renaming onto it"; a person named by `title:`
+ *   again -> RED on "sends the filename as the name, whatever title: says".
+ *
+ * ⭐ 0.8.0: a move not yet sent survives a restart (*Move lost on restart*),
+ * a rename while a note's first request is out becomes a move (*Rename in
+ * flight*), and a move onto a taken path deletes the entry it left (*Rename
+ * onto a taken path*). Sabotage-checked (2026-10-21), each alone then restored:
+ * - getState() without `renames` → "survives a restart" RED;
+ * - restoreState() not restoring them → "survives a restart" RED;
+ * - the rename hook not saving soon → "is saved within a second" RED;
+ * - send.ts tracking the note where it is now (the 0.7 code) → "renamed while
+ *   its first request is out" RED;
+ * - no `not_moved` branch in renames.ts → "onto a taken path" RED;
+ * - saveNow() returning before it saves (2026-10-22) → "is saved at once when
+ *   Obsidian quits" RED; `saveWaiting` always false → the same test RED.
  */
 import { TFile, TFolder } from 'obsidian';
-import { BulkSyncItem, BulkSyncResponse, PensioSettings } from '../../types';
+import { BulkSyncItem, BulkSyncResponse, PensioSettings, SyncStateData } from '../../types';
 import { SyncEngine } from '../engine';
 import { folderTree } from './fakeVault';
 
@@ -54,7 +71,7 @@ function makeFolder(path: string, children: unknown[]): { path: string; children
     return folder;
 }
 
-function setup({ canRename = true, refuse = [] as string[], mirror = false } = {}) {
+function setup({ canRename = true, refuse = [] as string[], mirror = false, taken = [] as string[] } = {}) {
     const files: FakeFile[] = [];
     const handlers: Record<string, (...args: unknown[]) => void> = {};
     const calls: { entries: BulkSyncItem[]; people: BulkSyncItem[] }[] = [];
@@ -71,10 +88,17 @@ function setup({ canRename = true, refuse = [] as string[], mirror = false } = {
                 file_path: refuse.includes(i.new_file_path ?? '') ? (i.new_file_path as string) : i.file_path,
                 error: 'refused',
             })),
+        // A move whose new path is taken lands on the row there (api/bulk_views.py).
+        not_moved: items.filter(i => i.action === 'rename' && taken.includes(i.file_path)).map(i => i.file_path),
     });
+    /** Runs once, while the next request is out. */
+    let during: (() => void) | null = null;
     const api = {
         bulkSync: jest.fn(async (entries: BulkSyncItem[], people: BulkSyncItem[]): Promise<BulkSyncResponse> => {
             calls.push({ entries, people });
+            const now = during;
+            during = null;
+            now?.();
             return {
                 entries: section(entries), people: section(people), total_time_ms: 0,
                 ...(canRename ? { capabilities: { rename: true } } : {}),
@@ -99,9 +123,19 @@ function setup({ canRename = true, refuse = [] as string[], mirror = false } = {
         journalFolders: [{ folder: 'Journal' }], peopleFolder: 'People',
         enableMirrorDelete: mirror, debugMode: false,
     };
+    /** Every sync state the engine saved, as the plugin would keep it. */
+    const saved: SyncStateData[] = [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const engine = new SyncEngine(app as any, settings, api as any);
+    const engine = new SyncEngine(app as any, settings, api as any, async (state) => { saved.push(state); });
     engine.startWatching();
+    /** Obsidian quits and starts again: a new engine from the last saved state. */
+    const restart = (): SyncEngine => {
+        engine.stopWatching();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const again = new SyncEngine(app as any, settings, api as any);
+        again.restoreState(saved[saved.length - 1]);
+        return again;
+    };
 
     const move = (file: FakeFile, to: string): void => {
         const from = file.path;
@@ -112,11 +146,12 @@ function setup({ canRename = true, refuse = [] as string[], mirror = false } = {
     };
     const sent = (): string[] => calls.flatMap(c => [...c.entries, ...c.people]).map(i =>
         `${i.action} ${i.file_path}${i.new_file_path ? ` → ${i.new_file_path}` : ''}`);
-    const tracked = (): string[] =>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        Array.from(((engine as any).syncedFiles as Map<string, unknown>).keys()).sort();
+    // The sync history's paths, as the engine reports them (sync/history.ts).
+    const tracked = (): string[] => engine.trackedPaths();
 
-    return { files, engine, api, calls, handlers, move, sent, tracked };
+    const whileTheNextRequestIsOut = (fn: () => void): void => { during = fn; };
+
+    return { files, engine, api, calls, handlers, move, sent, tracked, saved, restart, whileTheNextRequestIsOut };
 }
 
 /** Sync once, then forget what was sent, so a test reads only what follows. */
@@ -205,6 +240,43 @@ describe('A renamed note is the same entry', () => {
             'rename Journal/2026/a.md → Journal/Archive 2026/a.md',
             'rename Journal/2026/b.md → Journal/Archive 2026/b.md',
         ]);
+    });
+});
+
+describe('A delete and a rename in the same sync', () => {
+    it('frees a deleted path before renaming onto it', async () => {
+        // ⛔ Renames went first, so the rename met the old row still on the
+        // path, synced onto it, and the delete then removed it — orphaning the
+        // renamed note's person ("Ben 3", found 2026-10-21).
+        const env = setup();
+        const old = makeFile('People/Ben 2.md', '---\nrelationship: coworker\n---\nNotes.');
+        const other = makeFile('People/Ben 3.md', '---\nrelationship: coworker\n---\nNotes.');
+        env.files.push(old, other);
+        await synced(env);
+
+        env.files.splice(env.files.indexOf(old), 1);
+        env.handlers['delete'](old);
+        env.move(other, 'People/Ben 2.md');
+        await env.engine.syncAll(false);
+
+        expect(env.sent()).toEqual([
+            // A delete goes to both sections since 0.7.2 (sync/mirror.ts deleteItems).
+            'delete People/Ben 2.md',
+            'delete People/Ben 2.md',
+            'rename People/Ben 3.md → People/Ben 2.md',
+        ]);
+    });
+});
+
+describe('A person is named by their note', () => {
+    it('sends the filename as the name, whatever title: says', async () => {
+        const env = setup();
+        const person = makeFile('People/Ben 2.md', '---\ntitle: Ben 3\nrelationship: coworker\n---\nNotes.');
+        env.files.push(person);
+
+        await env.engine.syncAll(false);
+
+        expect(env.calls[0].people[0].data).toMatchObject({ name: 'Ben 2', person_note_path: 'People/Ben 2.md' });
     });
 });
 
@@ -339,5 +411,80 @@ describe('A server that cannot, or will not, move it', () => {
         await env.engine.syncAll(false);
 
         expect(env.sent()).toContain('create Journal/new.md');
+    });
+});
+
+describe('A move not yet sent survives a restart (0.8.0)', () => {
+    it('is saved within a second of the move', async () => {
+        const env = setup();
+        const note = makeFile('Journal/Old.md');
+        env.files.push(note);
+        await synced(env);
+
+        env.move(note, 'Journal/New.md');
+        jest.advanceTimersByTime(SyncEngine.SAVE_SOON_MS);
+
+        expect(env.saved[env.saved.length - 1].renames).toEqual({ 'Journal/Old.md': 'Journal/New.md' });
+    });
+
+    it('is saved at once when Obsidian quits, inside that second', async () => {
+        // ⛔ Found by Gabriel's test of 0.8.0 (2026-10-22): a move, then Quit
+        // within a second, and nothing was saved. Obsidian does not unload
+        // plugins on quit; its `quit` event asks for this (plugin/wiring.ts).
+        const env = setup();
+        const note = makeFile('Journal/Old.md');
+        env.files.push(note);
+        await synced(env);
+        env.move(note, 'Journal/New.md');
+        // What plugin/wiring.ts::saveOnQuit asks before giving Obsidian a task.
+        expect(env.engine.saveWaiting).toBe(true);
+
+        await env.engine.saveNow();
+
+        expect(env.saved[env.saved.length - 1].renames).toEqual({ 'Journal/Old.md': 'Journal/New.md' });
+        expect(env.engine.saveWaiting).toBe(false);
+    });
+
+    it('is sent after Obsidian starts again, as a move', async () => {
+        const env = setup();
+        const note = makeFile('Journal/Old.md');
+        env.files.push(note);
+        await synced(env);
+        env.move(note, 'Journal/New.md');
+        jest.advanceTimersByTime(SyncEngine.SAVE_SOON_MS);
+
+        await env.restart().syncAll(false);
+
+        expect(env.sent()).toEqual(['rename Journal/Old.md → Journal/New.md']);
+    });
+});
+
+describe('A rename the request did not expect (0.8.0)', () => {
+    it('a note renamed while its first request is out keeps its entry, as a move', async () => {
+        const env = setup();
+        const note = makeFile('Journal/Draft.md');
+        env.files.push(note);
+        env.whileTheNextRequestIsOut(() => env.move(note, 'Journal/Final.md'));
+
+        await env.engine.syncAll(false);
+        env.calls.length = 0;
+        await env.engine.syncAll(false);
+
+        expect(env.sent()).toEqual(['rename Journal/Draft.md → Journal/Final.md']);
+        expect(env.tracked()).toEqual(['Journal/Final.md']);
+    });
+
+    it('a move onto a taken path deletes the entry the note left', async () => {
+        const env = setup({ taken: ['Journal/a.md'] });
+        const note = makeFile('Journal/a.md');
+        env.files.push(note);
+        await synced(env);
+
+        env.move(note, 'Journal/b.md');
+        await env.engine.syncAll(false);
+
+        // A delete goes to both sections: the path may be a note or a person.
+        expect(env.sent()).toEqual(['rename Journal/a.md → Journal/b.md', 'delete Journal/a.md', 'delete Journal/a.md']);
+        expect(env.tracked()).toEqual(['Journal/b.md']);
     });
 });

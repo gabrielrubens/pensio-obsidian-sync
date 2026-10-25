@@ -11,6 +11,11 @@ export interface JournalFolderMapping {
  */
 export interface PensioSettings {
     apiUrl: string;
+    /**
+     * This vault's id on this device, from its local storage
+     * (`plugin/deviceState.ts`). ⛔ Never written to data.json since 0.8.0:
+     * the copy there is an older version's (`plugin/persisted.ts::Passthrough`).
+     */
     deviceId: string;
     autoSync: boolean;
     journalFolders: JournalFolderMapping[]; // folder-to-type mappings
@@ -172,6 +177,12 @@ export interface BulkSyncResponse {
         deleted: number;
         /** Optional: absent on servers that cannot move a row. */
         renamed?: number;
+        /**
+         * Old paths of moves that landed on a path already taken: the note
+         * went onto the row there, and the row it left is still at the old
+         * path (`sync/renames.ts`). Absent on servers before it.
+         */
+        not_moved?: string[];
         skipped: number;
         errors: Array<{ file_path: string; error: string }>;
     };
@@ -181,6 +192,12 @@ export interface BulkSyncResponse {
         deleted: number;
         /** Optional: absent on servers that cannot move a row. */
         renamed?: number;
+        /**
+         * Old paths of moves that landed on a path already taken: the note
+         * went onto the row there, and the row it left is still at the old
+         * path (`sync/renames.ts`). Absent on servers before it.
+         */
+        not_moved?: string[];
         skipped: number;
         errors: Array<{ file_path: string; error: string }>;
     };
@@ -189,7 +206,7 @@ export interface BulkSyncResponse {
      * What this server can do beyond create/update/delete. Optional: absent on
      * servers older than the rename support. ⚠️ Absence is the signal that a
      * rename must fall back to delete + create — never an error message, which
-     * is translated (`engine.ts::processRenames`).
+     * is translated (`renames.ts::RenameQueue.process`).
      */
     capabilities?: Capabilities;
     /**
@@ -202,7 +219,7 @@ export interface BulkSyncResponse {
 
 /** What a bulk answer says the server can do beyond create, update and delete. */
 export interface Capabilities {
-    /** It moves a renamed note's row (`engine.ts::processRenames`). */
+    /** It moves a renamed note's row (`renames.ts::RenameQueue.process`). */
     rename?: boolean;
     /**
      * It fills `content_plain` from `content_html`, so a note's text may go
@@ -247,6 +264,11 @@ export interface SyncStateData {
      * written before this field existed, and until a server first answers.
      */
     capabilities?: CapabilitiesState;
+    /**
+     * Moves not yet sent, old path → new path (plugin 0.8.0, `sync/renames.ts`),
+     * so a restart does not lose one. Absent on state written before 0.8.0.
+     */
+    renames?: Record<string, string>;
 }
 
 /**
